@@ -4,7 +4,7 @@ COPY build_files /
 COPY system_files /system_files
 
 # Base Image
-FROM ghcr.io/ublue-os/bazzite-nvidia-open:stable@sha256:dfa558c3417d6e40fc702769cbeffef764f703e558a2b22a77ed8b3e7cc77731
+FROM ghcr.io/ublue-os/bluefin-nvidia-open:stable@sha256:56a7c7d44fc40a7d40d09fbe0ecc6259622e190d67614f06bb68582a4937df32
 
 ### [IM]MUTABLE /opt
 ## Some bootable images, like Fedora, have /opt symlinked to /var/opt, in order to
