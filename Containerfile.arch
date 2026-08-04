@@ -97,13 +97,6 @@ RUN pacman -Syu --noconfirm && \
 COPY --from=brew /system_files /
 RUN systemctl enable brew-setup.service
 
-RUN mkdir -p /usr/lib/dracut/dracut.conf.d/ && \
-    printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
-        > /usr/lib/dracut/dracut.conf.d/30-fix-bootc-module.conf && \
-    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc "\nomit_dracutmodules+=" tpm2-tss pcsc "\n' \
-        > /usr/lib/dracut/dracut.conf.d/30-bootc-container-build.conf && \
-    dracut --force "$(find /usr/lib/modules -maxdepth 1 -type d | grep -v '\.img' | tail -1)/initramfs.img"
-
 RUN rm -rf /boot /home /root /usr/local /srv /opt /mnt \
         /usr/lib/sysimage/log /usr/lib/sysimage/cache/pacman/pkg && \
     for d in /var/* /var/.[!.]*; do [ -d "$d" ] && ! mountpoint -q "$d" 2>/dev/null && rm -rf "$d" 2>/dev/null || true; done && \
@@ -134,3 +127,12 @@ FROM base AS hyprland
 RUN --mount=type=bind,from=context,source=/,target=/run/context \
     /run/context/build_files/desktop.sh hyprland
 RUN ln -sf /var/opt /opt 2>/dev/null || true
+
+RUN mkdir -p /usr/lib/dracut/dracut.conf.d/ && \
+    printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
+        > /usr/lib/dracut/dracut.conf.d/30-fix-bootc-module.conf && \
+    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc "\nomit_dracutmodules+=" tpm2-tss pcsc "\n' \
+        > /usr/lib/dracut/dracut.conf.d/30-bootc-container-build.conf && \
+    dracut --force "$(find /usr/lib/modules -maxdepth 1 -type d | grep -v '\.img' | tail -1)/initramfs.img"
+
+
