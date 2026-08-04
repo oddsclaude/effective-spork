@@ -125,7 +125,8 @@ RUN ln -sf /var/opt /opt 2>/dev/null || true
 
 FROM base AS hyprland
 RUN --mount=type=bind,from=context,source=/,target=/run/context \
-    /run/context/build_files/desktop.sh hyprland
+    /run/context/build_files/desktop.sh hyprland \
+    /run/context/build_files/build.sh 
 RUN ln -sf /var/opt /opt 2>/dev/null || true
 
 RUN mkdir -p /usr/lib/dracut/dracut.conf.d/ && \
