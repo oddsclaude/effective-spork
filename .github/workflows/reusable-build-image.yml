@@ -1,0 +1,1013 @@
+name: Image
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: "The name of the image to build"
+        required: true
+        type: string
+      image-aliases:
+        description: >-
+          Comma-separated friendly names to publish the same digest under, so
+          users need not know the fish names (e.g. "ubuntu" for grouper).
+          Additive: the canonical image-name tags are written exactly as
+          before. Aliases are written only in the promote step, so they can
+          never point at an image that failed the boot gate.
+        required: false
+        default: ""
+        type: string
+      image-desc:
+        description: "The description of the image to build"
+        required: false
+        type: string
+        default: "Albacore, built on CentOS Stream with bootc"
+      flavor:
+        description: "The flavor of the image to build"
+        required: false
+        type: string
+        default: "regular"
+      platforms:
+        description: "The platforms to build the image for"
+        required: false
+        type: string
+        default: "linux/amd64,linux/arm64"
+      platforms-json:
+        description: >-
+          The same platform list as a JSON matrix include —
+          [{"platform":"linux/amd64","safeplatform":"linux-amd64"},...].
+          Must stay in sync with `platforms`. Passed pre-computed by the
+          caller so this workflow needs no matrix-generation job: at a
+          20-concurrent-job org limit, a 5-second generate_matrix job per
+          flavor was measurably starving real builds of slots.
+          Required, deliberately with no default: this input alone drives the
+          build matrix, so a caller that forgot it would silently build a
+          different platform set than the one it asked for in `platforms`.
+        required: true
+        type: string
+      major-version:
+        description: "The version of CentOS to build the image on"
+        required: false
+        type: string
+        default: "10"
+      default-tag:
+        description: "The default tag to use for the image"
+        required: false
+        type: string
+        default: "lts"
+      image-variant:
+        description: "The image variant to build (yellowfin, albacore, etc.)"
+        required: false
+        type: string
+        default: "albacore"
+      sbom:
+        description: "Generate/publish SBOMs for the artifacts"
+        required: false
+        type: boolean
+        default: false
+      cleanup_runner:
+        description: "Use the ublue cleanup action to clean up the runner before running the build"
+        required: false
+        type: boolean
+        default: true
+      publish:
+        description: "Publish this image"
+        required: false
+        type: boolean
+        default: true
+      remove-unwanted-software:
+        description: "Run the remove-unwanted-software action to free up disk space"
+        required: false
+        type: boolean
+        default: false
+      chain-base-image:
+        description: "Base image to use for chained builds (instead of OS base image)"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      SIGNING_SECRET:
+        description: "The private key used to sign the image"
+        required: false
+
+
+jobs:
+  build_push:
+    name: ${{ matrix.safeplatform }}
+    runs-on: ${{ contains(matrix.platform, 'amd64') && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
+    # 180 to give the source-based experimental variants headroom —
+    # guppy (Gentoo) still compiles bootc from git even with the binhost (#644).
+    # A max, not a fixed duration: RPM variants finish in ~20-40m unaffected.
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(inputs.platforms-json) }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      IMAGE_NAME: ${{ inputs.image-name }}
+      IMAGE_DESC: ${{ inputs.image-desc }}
+      IMAGE_REGISTRY: ${{ vars.IMAGE_REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}
+      DEFAULT_TAG: ${{ inputs.default-tag }}
+      MAJOR_VERSION: ${{ inputs.major-version }}
+      PLATFORMS: ${{ inputs.platforms }}
+
+    steps:
+      - name: Install dependencies
+        if: contains(matrix.platform, 'linux/arm64')
+        run: |
+          sudo apt update -y
+          sudo apt install -y \
+            podman
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+        if: ${{ !startsWith(inputs.flavor, 'base') }}
+
+      - name: Checkout (no submodules)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ startsWith(inputs.flavor, 'base') }}
+
+      - name: Setup runner
+        uses: projectbluefin/actions/bootc-build/setup-runner@c3ffb5dd594f4a363298bacc7ad4cfe18457fa97 # v1 as of 2026-07-02
+        with:
+          storage-backend: btrfs
+          update-podman: "true"
+          install-tools: '[]'
+
+      - name: Install just and yq
+        run: |
+          # Pinned versions — /latest/download/ redirects trigger 403
+          # rate-limiting on some runner types (e.g. linux/amd64/v2).
+          YQ_VERSION="v4.53.3"
+          JUST_VERSION="1.55.1"
+          ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+          JUST_ARCH=$(uname -m | sed 's/amd64/x86_64/')
+
+          # Retry loop — GitHub CDN transient 403s resolve after a short wait
+          for i in 1 2 3; do
+            sudo wget -qO /usr/bin/yq \
+              "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${ARCH}" \
+              && break || sleep $((i * 2))
+          done
+
+          curl -fsSL \
+            "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-${JUST_ARCH}-unknown-linux-musl.tar.gz" \
+            -o /tmp/just.tgz 2>/dev/null \
+            || curl -fsSL https://just.systems/install.sh | sudo bash -s -- --to /usr/local/bin
+
+          if [ -f /tmp/just.tgz ]; then sudo tar -xzf /tmp/just.tgz -C /usr/local/bin just; fi
+          sudo chmod +x /usr/bin/yq /usr/local/bin/just 2>/dev/null || true
+          just --version && yq --version
+
+
+      # Layer cache lives in a GHCR repo (buildah's native distributed cache):
+      # shared across jobs/flavors/arches, no tarball upload each run, no
+      # 10 GB actions/cache eviction. Replaces two broken mechanisms — a DNF
+      # host-path cache that CI builds never mounted (use_cache=0), and a
+      # buildah "local cache" whose env sudo stripped and whose buildx-only
+      # type=local syntax buildah doesn't even parse.
+      - name: Login to GitHub Container Registry (cache + push)
+        if: ${{ inputs.publish }}
+        uses: ./.github/actions/ghcr-login
+
+      - name: Configure buildah registry layer cache
+        env:
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+        run: |
+          CACHE_REPO="${IMAGE_REGISTRY}/tunaos-buildcache"
+          FLAGS="--layers --cache-from ${CACHE_REPO}"
+          # Only trusted (non-PR) runs may write cache entries.
+          if [ "$IS_PR" != "true" ]; then
+            FLAGS="$FLAGS --cache-to ${CACHE_REPO}"
+          fi
+          echo "BUILDAH_CACHE_FLAGS=${FLAGS}" >> "$GITHUB_ENV"
+
+      - name: Build Image
+        id: build-image
+        shell: bash
+        env:
+          FLAVOR: ${{ inputs.flavor }}
+          IMAGE_VARIANT: ${{ inputs.image-variant }}
+          DEFAULT_TAG: ${{ inputs.default-tag }}
+          PUBLIC_IMAGE_NAME: ${{ inputs.image-name }}
+          PLATFORM: ${{ matrix.platform }}
+          CHAIN_BASE_IMAGE: ${{ inputs.chain-base-image }}
+          # PR builds never publish; skip the two-pass chunkah rechunk +
+          # relabel (~10 min) and validate the plain build instead.
+          SKIP_RECHUNK: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+        run: |
+          set -x
+          just=$(which just)
+          # Pre-pull the OS base with retries: quay's CDN drops blobs
+          # mid-transfer often enough to kill nightly builds (rawhide:
+          # #675). podman build then finds the base in local storage.
+          # Platform-aware: single-arch bases (marlin/archlinux) have an
+          # arm64 override in get-base-image.sh; keep the pre-pull in sync
+          # with what the build will actually use.
+          BASE=$(./scripts/get-base-image.sh "${IMAGE_VARIANT}" "${PLATFORM}" 2>/dev/null || \
+            yq -r ".variants[] | select(.id == \"${IMAGE_VARIANT}\") | .base_image // \"\"" .github/build-config.yml)
+          if [ -n "$BASE" ] && [ -z "${CHAIN_BASE_IMAGE}" ]; then
+            for i in 1 2 3 4; do
+              sudo podman pull --platform "${PLATFORM}" "$BASE" && break
+              echo "base pull attempt $i failed; retrying..."
+              sleep $((i * 15))
+            done
+          fi
+          build_start=$(date +%s)
+          # --preserve-env: sudo otherwise strips the cache/rechunk knobs
+          # (the old layer cache never worked for exactly this reason).
+          sudo --preserve-env=BUILDAH_CACHE_FLAGS,SKIP_RECHUNK,PUBLIC_IMAGE_NAME \
+            "$just" build "${IMAGE_VARIANT}" "${FLAVOR}" "${PLATFORM}" 1 "${DEFAULT_TAG}" "${CHAIN_BASE_IMAGE}"
+          echo "BUILD_SECONDS=$(( $(date +%s) - build_start ))" >> "$GITHUB_ENV"
+
+      - name: Build telemetry
+        if: always()
+        env:
+          IMAGE_VARIANT: ${{ inputs.image-variant }}
+          DEFAULT_TAG: ${{ inputs.default-tag }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          IMAGE="localhost/${IMAGE_VARIANT}:${DEFAULT_TAG}"
+          SIZE=$(sudo podman image inspect --format '{{.Size}}' "$IMAGE" 2>/dev/null || echo 0)
+          LAYERS=$(sudo podman image inspect --format '{{len .RootFS.Layers}}' "$IMAGE" 2>/dev/null || echo 0)
+          {
+            echo "### 📊 Build telemetry — ${IMAGE_NAME}:${DEFAULT_TAG} (${PLATFORM})"
+            echo ""
+            echo "| build time | image size | layers |"
+            echo "|---|---|---|"
+            echo "| ${BUILD_SECONDS:-?}s | $(numfmt --to=iec "${SIZE}" 2>/dev/null || echo "${SIZE}") | ${LAYERS} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+
+      - name: Enable KVM for verification
+        if: github.event_name == 'pull_request' && contains(matrix.platform, 'amd64')
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | \
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          sudo apt-get install -y qemu-system-x86 qemu-utils ovmf socat imagemagick
+
+      - name: Boot-verify image (PR gate)
+        if: github.event_name == 'pull_request' && contains(matrix.platform, 'amd64')
+        shell: bash
+        env:
+          IMAGE_VARIANT: ${{ inputs.image-variant }}
+          DEFAULT_TAG: ${{ inputs.default-tag }}
+        run: |
+          # The image was built under sudo, so it lives in root podman
+          # storage; just qcow2 detects that and skips the save/load sync.
+          just qcow2 "localhost/${IMAGE_VARIANT}:${DEFAULT_TAG}"
+          QCOW2=$(find . -maxdepth 1 -name "*.qcow2" | head -1)
+          mkdir -p verify-out
+          sudo ./scripts/iso-e2e.sh "$QCOW2" --disk \
+            --output verify-out \
+            --timeout 600
+
+      - name: Upload PR verification evidence
+        if: always() && github.event_name == 'pull_request' && contains(matrix.platform, 'amd64')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-boot-verify-${{ inputs.image-name }}-${{ inputs.default-tag }}-${{ matrix.safeplatform }}
+          path: |
+            verify-out/serial.log
+            verify-out/*.ppm
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Push to GHCR
+        if: ${{ inputs.publish }}
+        id: push
+        env:
+          IMAGE_REGISTRY: ${{ env.IMAGE_REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_VARIANT: ${{ inputs.image-variant }}
+          DEFAULT_TAG: ${{ inputs.default-tag }}
+          PLATFORM: ${{ matrix.platform }}
+          SAFE_PLATFORM: ${{ matrix.safeplatform }}
+          MAX_RETRIES: 3
+        run: |
+          set -x
+          IMAGE="localhost/${IMAGE_VARIANT}:${DEFAULT_TAG}"
+          IMAGE_DIGEST="$(sudo podman image inspect --format '{{.Digest}}' "${IMAGE}")"
+
+          sudo podman tag "${IMAGE}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${SAFE_PLATFORM}"
+
+          for i in $(seq "${MAX_RETRIES}"); do
+            sudo podman push --digestfile=/tmp/digestfile \
+              --compression-format=zstd:chunked \
+              --compression-level=3 \
+              --force-compression \
+              "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${SAFE_PLATFORM}" \
+              && break || sleep $((5 * i));
+          done
+
+          REMOTE_IMAGE_DIGEST=$(sudo cat /tmp/digestfile)
+          echo "remote_image_digest=${REMOTE_IMAGE_DIGEST}" >> $GITHUB_OUTPUT
+          echo "digest=${IMAGE_DIGEST}" >> $GITHUB_OUTPUT
+
+      - name: Verify rechunk metadata preserved
+        if: ${{ inputs.publish }}
+        env:
+          IMAGE_REGISTRY: ${{ env.IMAGE_REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DEFAULT_TAG: ${{ inputs.default-tag }}
+          SAFE_PLATFORM: ${{ matrix.safeplatform }}
+        run: |
+          # chunkah packs layers with ostree component annotations; if a
+          # podman/skopeo regression strips them during push, client delta
+          # updates silently degrade. Advisory check (warn, don't block).
+          REF="docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${SAFE_PLATFORM}"
+          RAW=$(sudo skopeo inspect --raw "$REF")
+          LAYERS=$(echo "$RAW" | jq '.layers | length')
+          ANNOTATED=$(echo "$RAW" | jq '[.layers[].annotations // {} | keys[]] | map(select(test("ostree|chunkah"))) | length')
+          echo "layers=${LAYERS} ostree-annotated-keys=${ANNOTATED}"
+          if [ "${ANNOTATED}" = "0" ]; then
+            echo "::warning::pushed manifest ${REF} has no ostree/chunkah layer annotations — rechunk metadata may have been stripped"
+          fi
+
+      # Publish the installed package set alongside the image so parity
+      # between editions is diffable directly, instead of being inferred.
+      #
+      # This exists because inference is unreliable. A size-based audit of all
+      # 37 editions (tuna-os/tunaos-packages#133) flagged 24 as "too small to
+      # contain their desktop" — and the EL-family XFCE flags were wrong:
+      # those ship a lean XFCE *Wayland* stack (xfwl4 + greetd), which is
+      # legitimately far smaller than Fedora's X11 XFCE. Compressed size
+      # cannot tell "packages missing" from "different architecture". A
+      # package list can, and it also confirms the real failures: marlin:kde
+      # carries 338 packages against its base's 480, and zero KDE packages.
+      #
+      # Not derived from the Syft SBOM below: that step is continue-on-error
+      # and time-boxed because Syft mmaps the whole image and OOMs on desktop
+      # sizes, so the SBOM is frequently absent. Asking the package manager
+      # directly costs a second and always works. Its artifact also expires in
+      # 7 days and needs GitHub auth, which is no good for comparing editions
+      # built weeks apart.
+      #
+      # Pushed as an OCI artifact next to the image, so it is durable, is
+      # versioned with the image, and is readable by anyone who can pull it.
+      - name: Publish package manifest
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_REGISTRY: ${{ env.IMAGE_REGISTRY }}
+          DEFAULT_TAG: ${{ inputs.default-tag }}
+          SAFE_PLATFORM: ${{ matrix.safeplatform }}
+        run: |
+          set -euo pipefail
+          REF="${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${SAFE_PLATFORM}"
+          OUT="packages-${IMAGE_NAME}-${DEFAULT_TAG}-${SAFE_PLATFORM}.txt"
+
+          # The image is already in local storage from the push step, so this
+          # runs against local layers rather than pulling anything back.
+          # Every TunaOS base is covered: rpm (yellowfin/bonito/skipjack/
+          # albacore/sailfin), dpkg (flounder/grouper), pacman (marlin),
+          # portage (guppy).
+          sudo podman run --rm --entrypoint sh "$REF" -c '
+            if   command -v rpm        >/dev/null 2>&1; then rpm -qa --qf "%{NAME}\t%{VERSION}-%{RELEASE}\n"
+            elif command -v dpkg-query >/dev/null 2>&1; then dpkg-query -W -f "${Package}\t${Version}\n"
+            elif command -v pacman     >/dev/null 2>&1; then pacman -Q | tr " " "\t"
+            elif command -v qlist      >/dev/null 2>&1; then qlist -ICv
+            else echo "UNKNOWN-PACKAGE-MANAGER" >&2; exit 1
+            fi' | LC_ALL=C sort -u > "$OUT"
+
+          # An empty manifest is worse than none: it reads as "this edition has
+          # no packages" and would make a parity diff show everything missing.
+          #
+          # It is a real state, not a hypothetical. flounder (Debian) and guppy
+          # (Gentoo) ship *no package database*: /var/lib/dpkg and /var/db/pkg
+          # are both empty and there is no dpkg `status` file anywhere in the
+          # image. Those DBs live under /var, which bootc images empty — rpm
+          # escapes it only because its DB moved to /usr/lib/sysimage/rpm, and
+          # pacman's happens to survive. So those systems cannot enumerate
+          # their own packages either (tuna-os/tunaos-packages#135).
+          COUNT=$(wc -l < "$OUT")
+          if [ "$COUNT" -lt 20 ]; then
+            echo "::warning::${REF} reported only ${COUNT} packages — the package database is likely absent (see tunaos-packages#135). Publishing a marker instead of an empty manifest."
+            printf '# NO PACKAGE DATABASE IN IMAGE\n# %s\n# see https://github.com/tuna-os/tunaos-packages/issues/135\n' "$REF" > "$OUT"
+          fi
+
+          echo "${COUNT} packages recorded for ${REF}"
+          head -3 "$OUT"
+
+          # oras is already used elsewhere in this pipeline for toolchain
+          # payloads. The .packages suffix keeps it out of the image tag
+          # namespace while staying trivially discoverable.
+          command -v oras >/dev/null 2>&1 || {
+            curl -fsSL "https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz" \
+              | sudo tar -xz -C /usr/local/bin oras
+          }
+          oras push "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${SAFE_PLATFORM}.packages" \
+            --artifact-type application/vnd.tunaos.packages.v1 \
+            "${OUT}:text/plain"
+
+      - name: Upload package manifest
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packages-${{ env.IMAGE_NAME }}-${{ inputs.default-tag }}-${{ matrix.safeplatform }}
+          path: packages-*.txt
+          if-no-files-found: warn
+
+      - name: Setup Syft
+        if: inputs.sbom && github.event_name != 'pull_request'
+        id: setup-syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          syft-version: v1.39.0
+
+      - name: Generate SBOM
+        if: inputs.sbom && github.event_name != 'pull_request'
+        # Syft mmaps the multi-GB OCI image and can OOM-kill the runner on
+        # desktop-sized images; cap Go memory and time-box it, and never
+        # fail the build over an SBOM (projectbluefin/actions#294/#300).
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          SYFT_CMD: ${{ steps.setup-syft.outputs.cmd }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DEFAULT_TAG: ${{ inputs.default-tag }}
+          SAFE_PLATFORM: ${{ matrix.safeplatform }}
+          GOMEMLIMIT: 3GiB
+          GOGC: "25"
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/${IMAGE_NAME}:${DEFAULT_TAG}-${SAFE_PLATFORM}"
+          $SYFT_CMD "$IMAGE" --scope all-layers -o spdx-json="sbom-${IMAGE_NAME}-${DEFAULT_TAG}-${SAFE_PLATFORM}.spdx.json"
+
+      - name: Upload SBOM
+        if: inputs.sbom && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ env.IMAGE_NAME }}-${{ inputs.default-tag }}-${{ matrix.safeplatform }}
+          path: sbom-*.spdx.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      # TODO: reinstate sign-and-publish when key propagation through composite
+      # actions is resolved. The COSIGN_PRIVATE_KEY env var is masked but
+      # arrives empty at runtime in the composite action.
+
+      - name: PR Testing Instructions
+        if: github.event_name == 'pull_request'
+        env:
+          IMAGE_REGISTRY: ${{ env.IMAGE_REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DEFAULT_TAG: ${{ env.DEFAULT_TAG }}
+          SAFE_PLATFORM: ${{ matrix.safeplatform }}
+        run: |
+          TEST_IMAGE_REF="${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}-${{ matrix.safeplatform }}"
+          STABLE_IMAGE_REF="${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}"
+          echo "### 🧪 Testing Instructions for ${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "To test this image, run the following command:" >> $GITHUB_STEP_SUMMARY
+          echo " \`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo " sudo bootc switch --enforce-container-sigpolicy ${TEST_IMAGE_REF}" >> $GITHUB_STEP_SUMMARY
+          echo " \`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "To go back to the stable version of this flavor:" >> $GITHUB_STEP_SUMMARY
+          echo " \`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo " sudo bootc switch --enforce-container-sigpolicy ${STABLE_IMAGE_REF}" >> $GITHUB_STEP_SUMMARY
+          echo " \`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Generate PR Diff
+        if: github.event_name == 'pull_request'
+        env:
+          IMAGE_REGISTRY: ${{ env.IMAGE_REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DEFAULT_TAG: ${{ env.DEFAULT_TAG }}
+          SAFE_PLATFORM: ${{ matrix.safeplatform }}
+        run: |
+          # Only run diff for one platform to avoid spamming comments (e.g., amd64)
+          if [[ "${SAFE_PLATFORM}" != *"amd64"* ]]; then
+            echo "Skipping diff for non-amd64 platform"
+            exit 0
+          fi
+
+          # Pull the stable base flavor image (base for comparison)
+          # We assume the default tag exists. If not, we might fail or skip.
+          # We'll try to pull it, if it fails, we skip diff.
+          BASE_IMAGE="${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}"
+          TARGET_IMAGE="${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${SAFE_PLATFORM}"
+
+          echo "Pulling base image $BASE_IMAGE..."
+          if ! sudo podman pull "$BASE_IMAGE"; then
+            echo "Failed to pull $BASE_IMAGE. Skipping diff."
+            exit 0
+          fi
+
+          echo "Running diff..."
+          ./scripts/diff-images.sh "$BASE_IMAGE" "$TARGET_IMAGE" "diff_report.md"
+
+          # Add a header to the report
+          sed -i '1s/^/## 🔍 Image Diff Report\n\n/' diff_report.md
+
+      - name: Post Diff Comment
+        if: github.event_name == 'pull_request' && hashFiles('diff_report.md') != ''
+        uses: thollander/actions-comment-pull-request@24bffb9b452ba05a4f3f77933840a6a841d1b32b # v3.0.1
+        with:
+          filePath: diff_report.md
+          comment_tag: diff-${{ env.IMAGE_NAME }}
+
+      - name: Create Job Outputs
+        if: ${{ inputs.publish }}
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          SAFE_PLATFORM: ${{ matrix.safeplatform }}
+          DIGEST: ${{ steps.push.outputs.remote_image_digest }}
+        run: |
+          mkdir -p /tmp/outputs/digests
+          echo "${DIGEST}" > "/tmp/outputs/digests/${IMAGE_NAME}-${DEFAULT_TAG}-${SAFE_PLATFORM}.txt"
+
+      - name: Upload Output Artifacts
+        if: ${{ inputs.publish }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.IMAGE_NAME }}-${{ env.DEFAULT_TAG }}-${{ matrix.safeplatform }}-${{ github.run_id }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            /tmp/outputs/digests/*.txt
+  manifest:
+    name: Manifest
+    # Temporarily off RunsOn: the tuna-os AWS account is capped to Free Tier,
+    # so CreateFleet rejects every 8-vCPU type it tries and the job dies in
+    # "Set up runner" before a single step executes. This is registry and
+    # signing work with no special hardware needs, so a GitHub runner does it
+    # fine. Restore the RunsOn label once AWS credits are back.
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - build_push
+    container:
+      image: cgr.dev/chainguard/wolfi-base@sha256:d2ad9a742d38e1ab550fbb20911056339632a5ca2f01777a32422a4c944fcb99  # :latest linux/amd64 as of 2026-06-13
+      options: --privileged --security-opt seccomp=unconfined
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      image: ${{ steps.push_manifest.outputs.IMAGE }}
+      digest: ${{ steps.push_manifest.outputs.DIGEST }}
+      all_platforms_built: ${{ steps.check_platforms.outputs.all_platforms_built }}
+    env:
+      IMAGE_NAME: ${{ inputs.image-name }}
+      IMAGE_DESC: ${{ inputs.image-desc }}
+      IMAGE_REGISTRY: ${{ vars.IMAGE_REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}
+      DEFAULT_TAG: ${{ inputs.default-tag }}
+      MAJOR_VERSION: ${{ inputs.major-version }}
+      PLATFORMS: ${{ inputs.platforms }}
+    steps:
+      - name: Install dependencies
+        run: |
+          apk update
+          # Install necessary packages for building and pushing the image
+          apk add jq git podman uutils bash conmon crun netavark fuse-overlayfs libstdc++ yq
+          ln -sf /bin/bash /bin/sh
+          mkdir -p /etc/containers
+          echo '{"default":[{"type":"insecureAcceptAnything"}]}' | jq . > /etc/containers/policy.json
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Exit on failure
+        env:
+          JOBS: ${{ toJson(needs) }}
+        run: |
+          echo "Job status:"
+          echo $JOBS | jq -r 'to_entries[] | " - \(.key): \(.value.result)"'
+
+          for i in $(echo "${JOBS}" | jq -r 'to_entries[] | .value.result'); do
+            if [ "$i" != "success" ] && [ "$i" != "skipped" ]; then
+              echo ""
+              echo "Status check not okay!"
+              exit 1
+            fi
+          done
+
+      - name: Get current date
+        id: date
+        run: |
+          # Should generate a timestamp like what is defined on the ArtifactHub documentation
+          # E.G: 2022-02-08T15:38:15Z'
+          # https://artifacthub.io/docs/topics/repositories/container-images/
+          # https://linux.die.net/man/1/date
+          echo "date=$(date -u +%Y\-%m\-%d\T%H\:%M\:%S\Z)" >> $GITHUB_OUTPUT
+
+      - name: Extract numbers from input
+        id: extract-numbers
+        env:
+          MAJOR_VERSION: ${{ env.MAJOR_VERSION }}
+        run: |
+          numbers_only=$(echo "${MAJOR_VERSION}" | tr -cd '0-9')
+          echo "MAJOR_VERSION_NUMBER=${numbers_only}" >> "${GITHUB_ENV}"
+
+      - name: Image Metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: metadata
+        env:
+          README_URL: https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
+          SOURCE_URL: https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/blob/${{ github.sha }}/Containerfile.el10
+        with:
+          tags: |
+            type=raw,value=${{ env.DEFAULT_TAG}}
+          labels: |
+            io.artifacthub.package.readme-url=${{ env.README_URL }}
+            org.opencontainers.image.created=${{ steps.date.outputs.date }}
+            org.opencontainers.image.description=${{ env.IMAGE_DESC }}
+            org.opencontainers.image.documentation=https://tunaos.org/docs/intro
+            org.opencontainers.image.source=${{ env.SOURCE_URL }}
+            org.opencontainers.image.title=${{ env.IMAGE_NAME }}
+            org.opencontainers.image.url=https://tunaos.org
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+            org.opencontainers.image.version=${{ env.MAJOR_VERSION }}
+            io.artifacthub.package.deprecated=false
+            io.artifacthub.package.keywords=bootc,tunaos
+            io.artifacthub.package.license=Apache-2.0
+            io.artifacthub.package.logo-url=https://avatars.githubusercontent.com/u/223733964?s=200&v=4
+            io.artifacthub.package.maintainers=[{\"name\":\"hanthor\",\"email\":\"jreilly1821@gmail.com\"}]
+            io.artifacthub.package.prerelease=true
+            containers.bootc=1
+
+      - name: Fetch Build Outputs
+        if: ${{ inputs.publish }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: ${{ env.IMAGE_NAME }}-${{ env.DEFAULT_TAG }}-*
+          merge-multiple: true
+          path: /tmp/artifacts
+
+      - name: Load Outputs
+        if: ${{ inputs.publish }}
+        id: load-outputs
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DEFAULT_TAG: ${{ env.DEFAULT_TAG }}
+        run: |
+          set -e
+          DIGESTS_JSON="$(jq -n '{}')"
+          for digest_file in /tmp/artifacts/*.txt; do
+            FILENAME_ONLY="$(basename "${digest_file}")"
+            # Extract the safeplatform key from the filename (e.g., "bonito-base-linux-amd64-v2.txt" -> "linux-amd64-v2")
+            # Remove prefix "${IMAGE_NAME}-${DEFAULT_TAG}-"
+            KEY_PART="${FILENAME_ONLY#${IMAGE_NAME}-${DEFAULT_TAG}-}"
+            # Remove suffix ".txt"
+            PLATFORM_KEY="${KEY_PART%.txt}"
+            DIGEST="$(cat "${digest_file}")"
+            DIGESTS_JSON="$(echo "${DIGESTS_JSON}" | jq --arg key "${PLATFORM_KEY}" --arg value "${DIGEST}" '. + {($key): $value}')"
+          done
+          echo "DIGESTS_JSON=$(echo "$DIGESTS_JSON" | jq -c '.')" >> "${GITHUB_OUTPUT}"
+
+      - name: Check Platform Completeness
+        if: ${{ inputs.publish }}
+        id: check_platforms
+        env:
+          DIGESTS_JSON: ${{ steps.load-outputs.outputs.DIGESTS_JSON }}
+          IMAGE_VARIANT: "${{ inputs.image-variant }}"
+        run: |
+          set -e
+
+          # Expected platforms = what this flavor actually declares. The
+          # build matrix resolves per-flavor platform overrides into
+          # inputs.platforms (gnome-asahi is arm64-only; judging it against
+          # the variant's amd64+arm64 list made Promote silently skip
+          # forever). Fall back to the variant list only if the input is
+          # somehow empty. PR builds force amd64 here but never promote.
+          DEFAULT_PLATFORMS="${PLATFORMS}"
+          if [ -z "$DEFAULT_PLATFORMS" ]; then
+            # Use strenv() for robust environment variable access in yq
+            DEFAULT_PLATFORMS=$(yq -r '.variants[] | select(.id == strenv(IMAGE_VARIANT)) | .platforms | join(",")' .github/build-config.yml)
+          fi
+          if [ -z "$DEFAULT_PLATFORMS" ]; then
+            echo "Unknown variant: ${IMAGE_VARIANT}"
+            DEFAULT_PLATFORMS="linux/arm64,linux/amd64"
+          fi
+
+          echo "Variant: ${IMAGE_VARIANT}"
+          echo "Default platforms for this variant: ${DEFAULT_PLATFORMS}"
+
+          # Parse expected platforms (use default platforms, not input platforms)
+          expected_platforms=()
+          IFS=',' read -r -a expected_platforms <<< "${DEFAULT_PLATFORMS}"
+
+          # Check if all expected platforms have digests
+          all_platforms_built="true"
+          for platform_original in "${expected_platforms[@]}"; do
+            platform_key="${platform_original//\//-}"
+            digest="$(echo "${DIGESTS_JSON}" | jq -r --arg key "${platform_key}" '.[$key]')"
+
+            if [ "$digest" == "null" ] || [ -z "$digest" ]; then
+              echo "Missing platform: ${platform_original} (key: ${platform_key})"
+              all_platforms_built="false"
+            else
+              echo "Found platform: ${platform_original} (key: ${platform_key})"
+            fi
+          done
+
+          echo "All default platforms built: ${all_platforms_built}"
+          echo "all_platforms_built=${all_platforms_built}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create Manifest
+        if: ${{ inputs.publish }}
+        id: create-manifest
+        env:
+          IMAGE_REGISTRY: ${{ env.IMAGE_REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DEFAULT_TAG: ${{ env.DEFAULT_TAG }}
+        run: |
+          podman manifest create ${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}
+          echo "MANIFEST=${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Populate Manifest
+        if: ${{ inputs.publish }}
+        env:
+          MANIFEST: ${{ steps.create-manifest.outputs.MANIFEST }}
+          DIGESTS_JSON: ${{ steps.load-outputs.outputs.DIGESTS_JSON }} # Already confirmed valid JSON
+          LABELS: ${{ steps.metadata.outputs.labels }}
+          PLATFORMS: "${{ inputs.platforms }}"
+        run: |
+          set -e # Ensure script exits on error
+
+          # Turn the comma separated inputs.platforms string into a list
+          platforms=()
+          IFS=',' read -r -a platforms <<< "${PLATFORMS}"
+
+          for platform_original in "${platforms[@]}"; do
+            platform_key_for_lookup="${platform_original//\//-}"
+
+            digest="$(echo "${DIGESTS_JSON}" | jq -r --arg key "${platform_key_for_lookup}" '.[$key]')"
+
+            if [ "$digest" == "null" ] || [ -z "$digest" ]; then
+                echo "Error: Digest not found for platform ${platform_original}"
+                echo "Lookup key: ${platform_key_for_lookup} in DIGESTS_JSON=${DIGESTS_JSON}"
+              exit 1
+            fi
+
+            arch_for_podman="${platform_original#linux/}"
+            podman manifest add "${MANIFEST}" "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}@${digest}" --os linux --arch "${arch_for_podman}"
+          done
+
+          # Apply the labels to the manifest (separated by newlines)
+          while IFS= read -r label; do
+            echo "Applying label ${label} to manifest"
+            podman manifest annotate --index --annotation "$label" "${MANIFEST}"
+          done <<< "${LABELS}"
+
+      - name: Login to GitHub Container Registry
+        if: ${{ inputs.publish }}
+        env:
+          REGISTRY: ghcr.io
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login -u "${{ github.actor }}" --password-stdin "${REGISTRY}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login -u "${{ github.actor }}" --password-stdin "${REGISTRY}"
+
+      - name: Push Manifest
+        if: github.event_name != 'pull_request'
+        id: push_manifest
+        env:
+          MANIFEST: ${{ steps.create-manifest.outputs.MANIFEST }}
+          TAGS: ${{ steps.metadata.outputs.tags }}
+          IMAGE_REGISTRY: ${{ env.IMAGE_REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          # Push every tag under a -testing suffix. The bare tags (the ones
+          # users pull and docs reference) are only written by the promote
+          # job after the boot gate passes — a broken image can land in
+          # GHCR as :<flavor>-testing but never as :<flavor>.
+          while IFS= read -r tag; do
+            podman manifest push --all=false --digestfile=/tmp/digestfile \
+              --compression-format=zstd:chunked \
+              --compression-level=3 \
+              --force-compression \
+              "$MANIFEST" "$IMAGE_REGISTRY/$IMAGE_NAME:${tag}-testing"
+          done <<< "$TAGS"
+
+          DIGEST=$(cat /tmp/digestfile)
+          echo "DIGEST=$DIGEST" >> $GITHUB_OUTPUT
+          echo "IMAGE=$IMAGE_REGISTRY/$IMAGE_NAME" >> $GITHUB_OUTPUT
+
+  # NOTE: the former `sign` job is gone. It had been reduced to a single
+  # `echo "Manifest signing skipped"` while cosign key propagation is broken
+  # (see the TODO above Promote), yet still spun up a runner per flavor —
+  # at a 20-concurrent-job org limit that slot starves real builds. When
+  # signing is reinstated, add it back between manifest and tag-image.
+  # ── Boot gate ───────────────────────────────────────────────────────────────
+  # Pull the just-pushed :<tag>-testing manifest, install it to a qcow2 with
+  # bootc, boot it in QEMU, and require a graphical session (serial marker or
+  # screenshot sanity — scripts/iso-e2e.sh --disk). Promotion of the bare
+  # tags is blocked while this fails. Skipped for base* flavors (no desktop
+  # to verify; they are exercised by every desktop build layered on them).
+  verify_boot:
+    name: Gate
+    needs: manifest
+    # amd64-only: this gate is an x86 QEMU/KVM boot (qemu-system-x86 +
+    # OVMF), so arm64-only flavors (gnome-asahi) can never pass it —
+    # skopeo dies with "no image for architecture amd64" before qemu even
+    # starts. Promote treats a skipped gate as pass; asahi images are
+    # verified by the dispatched "Verify Asahi image" 35-point harness
+    # instead (no aarch64 KVM on GH runners — TCG boot gate is future work).
+    if: >-
+      inputs.publish && github.event_name != 'pull_request' &&
+      !startsWith(inputs.flavor, 'base') &&
+      contains(inputs.platforms, 'amd64')
+    # Temporarily off RunsOn (see the manifest job) while the AWS account is
+    # Free-Tier capped. This gate is the one with real hardware needs — an
+    # x86 QEMU/KVM boot with OVMF — so it is the likeliest of the four to
+    # need its dedicated runner back. GitHub-hosted Linux runners do expose
+    # /dev/kvm, and the job already reclaims disk and uses
+    # container-storage-action, so it is worth trying; if it flakes on
+    # capacity rather than on the image, that is the reason, not a
+    # regression in the image.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE_NAME: ${{ inputs.image-name }}
+      IMAGE_REGISTRY: ${{ vars.IMAGE_REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}
+      DEFAULT_TAG: ${{ inputs.default-tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Reclaim ~25 GB of preinstalled toolchains from the main disk. The qcow2
+      # is written to the workspace (main disk), not the container-storage
+      # volume, so large desktop/NVIDIA images can exhaust it during `just
+      # qcow2`. (Does not touch the node runtime / tool cache used by actions.)
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Maximize build space
+        uses: ublue-os/container-storage-action@dc1f4c8f17b672069e921f001132f7cf98a423a6 # main as of 2026-02-11
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | \
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+
+      # Do NOT apt-install podman on a runner that already has one. Newer
+      # ubuntu-latest images ship podman under /usr/local (its units land in
+      # /usr/local/lib/systemd/system), which dpkg knows nothing about, so
+      # `apt-get install podman` happily adds Ubuntu's podman 4.9.3 on top of
+      # it. sudo's secure_path then prefers /usr/local/bin/podman while the
+      # apt-installed conmon/OCI-runtime bits win elsewhere, and the mixed
+      # stack cannot start a container at all:
+      #
+      #   Error: OCI runtime error: crun: unknown version specified
+      #
+      # That killed sailfin niri's Gate in run 30594521039 while kde/xfce/gnome
+      # passed in the same run, purely because their runners already had podman
+      # apt-installed, making the install a no-op. It looks like a flake and is
+      # not: it fires whenever a job lands on the newer image.
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          pkgs=(just jq qemu-system-x86 qemu-utils ovmf socat imagemagick)
+          if sudo sh -c 'command -v podman' >/dev/null 2>&1; then
+            echo "podman already present: $(sudo sh -c 'command -v podman') ($(sudo podman --version))"
+          else
+            pkgs+=(podman)
+          fi
+          sudo apt-get install -y "${pkgs[@]}"
+
+      - name: Build qcow2 from testing image
+        env:
+          TEST_IMAGE: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}-testing
+        run: |
+          just qcow2 "${TEST_IMAGE}"
+
+      - name: Boot and verify
+        run: |
+          QCOW2=$(find . -maxdepth 1 -name "*.qcow2" | head -1)
+          mkdir -p verify-out
+          sudo ./scripts/iso-e2e.sh "$QCOW2" --disk \
+            --output verify-out \
+            --timeout 900
+
+      - name: Collect evidence
+        if: always()
+        run: |
+          sudo chown -R "$USER:$(id -gn)" verify-out 2>/dev/null || true
+          for ppm in verify-out/*.ppm; do
+            [[ -f "$ppm" ]] || continue
+            convert "$ppm" "${ppm%.ppm}.png" || true
+          done
+
+      - name: Upload boot evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: boot-gate-${{ inputs.image-name }}-${{ inputs.default-tag }}
+          path: |
+            verify-out/serial.log
+            verify-out/*.png
+          if-no-files-found: warn
+          retention-days: 7
+
+  tag-image:
+    name: Promote
+    needs: [manifest, verify_boot]
+    if: >-
+      !cancelled() && github.event_name != 'pull_request' &&
+      needs.manifest.result == 'success' &&
+      (needs.verify_boot.result == 'success' || needs.verify_boot.result == 'skipped')
+    # Temporarily off RunsOn: the tuna-os AWS account is capped to Free Tier,
+    # so CreateFleet rejects every 8-vCPU type it tries and the job dies in
+    # "Set up runner" before a single step executes. This is registry and
+    # signing work with no special hardware needs, so a GitHub runner does it
+    # fine. Restore the RunsOn label once AWS credits are back.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      IMAGE_NAME: ${{ inputs.image-name }}
+      IMAGE_DESC: ${{ inputs.image-desc }}
+      IMAGE_REGISTRY: ${{ vars.IMAGE_REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}
+      DEFAULT_TAG: ${{ inputs.default-tag }}
+      MAJOR_VERSION: ${{ inputs.major-version }}
+      PLATFORMS: ${{ inputs.platforms }}
+    steps:
+      - name: Install skopeo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+
+      - name: Login to GitHub Container Registry
+        env:
+          REGISTRY: ghcr.io
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login -u "${{ github.actor }}" --password-stdin "${REGISTRY}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | sudo podman login -u "${{ github.actor }}" --password-stdin "${REGISTRY}"
+          # Also login with skopeo
+          echo "${{ secrets.GITHUB_TOKEN }}" | sudo skopeo login -u "${{ github.actor }}" --password-stdin "${REGISTRY}"
+
+      - name: Pull Image and Apply Tags
+        id: tag
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_ALIASES: ${{ inputs.image-aliases }}
+          IMAGE_REGISTRY: ${{ env.IMAGE_REGISTRY }}
+          DEFAULT_TAG: ${{ env.DEFAULT_TAG }}
+          MAJOR_VERSION: ${{ env.MAJOR_VERSION }}
+          ALL_PLATFORMS_BUILT: ${{ needs.manifest.outputs.all_platforms_built }}
+          INPUT_PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -ex
+          # Promote the verified -testing manifest to the bare tags users
+          # pull. This is the ONLY place the bare :<flavor> tag is written.
+          SOURCE_IMAGE="${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-testing"
+
+          DATE_TAG="$(date +%Y%m%d)"
+
+          if [ "${ALL_PLATFORMS_BUILT}" = "true" ]; then
+            echo "All default platforms built and boot gate passed - promoting"
+
+            # Tag with flavor only
+            sudo skopeo copy --all "docker://${SOURCE_IMAGE}" "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}"
+
+            # Tag with flavor-date
+            sudo skopeo copy --all "docker://${SOURCE_IMAGE}" "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${DATE_TAG}"
+
+            # Tag each platform with flavor-arch and flavor-arch-date
+            IFS=',' read -r -a PLATFORMS <<< "${INPUT_PLATFORMS}"
+            for platform in "${PLATFORMS[@]}"; do
+              arch="${platform#linux/}"
+              arch="${arch//\//-}"
+              sudo skopeo copy --all "docker://${SOURCE_IMAGE}" "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${arch}"
+              sudo skopeo copy --all "docker://${SOURCE_IMAGE}" "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${arch}-${DATE_TAG}"
+            done
+
+            # Friendly aliases: the same digest under a name users can guess
+            # without knowing the fish names (grouper -> ubuntu, and so on).
+            # Deliberately inside the ALL_PLATFORMS_BUILT branch and after the
+            # canonical tags: an alias must never be the reason an unverified
+            # image looks published, and must never be the only tag written.
+            if [ -n "${IMAGE_ALIASES}" ]; then
+              IFS=',' read -r -a ALIASES <<< "${IMAGE_ALIASES}"
+              for alias_name in "${ALIASES[@]}"; do
+                alias_name="$(echo "${alias_name}" | tr -d '[:space:]')"
+                [ -n "${alias_name}" ] || continue
+                echo "Publishing alias ${alias_name}:${DEFAULT_TAG}"
+                sudo skopeo copy --all "docker://${SOURCE_IMAGE}" "docker://${IMAGE_REGISTRY}/${alias_name}:${DEFAULT_TAG}"
+                sudo skopeo copy --all "docker://${SOURCE_IMAGE}" "docker://${IMAGE_REGISTRY}/${alias_name}:${DEFAULT_TAG}-${DATE_TAG}"
+              done
+            fi
+
+            echo "tag=${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}" >> $GITHUB_OUTPUT
+          else
+            echo "Not all default platforms built - leaving bare tags at last good version"
+            echo "tag=${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}" >> $GITHUB_OUTPUT
+          fi
