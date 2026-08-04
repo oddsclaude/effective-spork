@@ -69,3 +69,6 @@ if [[ "${ENABLE_NVIDIA:-0}" == "1" ]]; then
   printf 'LIBVA_DRIVER_NAME=nvidia\nGBM_BACKEND=nvidia-drm\n__GLX_VENDOR_LIBRARY_NAME=nvidia\n' \
     >/etc/environment.d/10-nvidia.conf
 fi
+
+KERNEL_VERSION="$(basename "$(find /usr/lib/modules -maxdepth 1 -type d | grep -v -E "\.img$" | tail -n 1)")"
+DRACUT_NO_XATTR=1 dracut --force --no-hostonly --reproducible --zstd --verbose --kver "$KERNEL_VERSION" "/usr/lib/modules/$KERNEL_VERSION/initramfs.img"
