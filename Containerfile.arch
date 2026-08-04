@@ -27,11 +27,11 @@ FROM ${BASE_IMAGE} AS bootc-builder
 ARG BOOTC_VERSION
 ARG BOOTUPD_VERSION
 RUN pacman -Syu --noconfirm make git rust go-md2man ostree glibc pkgconf
-RUN git clone --depth 1 --branch "${BOOTC_VERSION}" https://github.com/bootc-dev/bootc.git /tmp/bootc && \
+RUN git clone --depth 1 https://github.com/bootc-dev/bootc.git /tmp/bootc && \
     cd /tmp/bootc && \
     make bin && \
     make install-all DESTDIR=/output
-RUN git clone --depth 1 --branch "${BOOTUPD_VERSION}" https://github.com/coreos/bootupd.git /tmp/bootupd && \
+RUN git clone --depth 1 https://github.com/coreos/bootupd.git /tmp/bootupd && \
     cd /tmp/bootupd && \
     make && \
     make install DESTDIR=/output
