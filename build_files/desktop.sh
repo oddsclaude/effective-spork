@@ -38,9 +38,6 @@ hyprland)
   ;;
 esac
 
-# ── NVIDIA ────────────────────────────────────────────────────────────────────
-# ENABLE_NVIDIA is declared as an ARG/ENV on the base stage in
-# Containerfile.arch and inherited here.
 if [[ "${ENABLE_NVIDIA:-0}" == "1" ]]; then
   echo "ENABLE_NVIDIA=1 — installing nvidia driver stack"
   pacman -S --noconfirm --needed \

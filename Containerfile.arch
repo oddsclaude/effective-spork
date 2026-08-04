@@ -134,5 +134,3 @@ FROM base AS hyprland
 RUN --mount=type=bind,from=context,source=/,target=/run/context \
     /run/context/build_files/desktop.sh hyprland
 RUN ln -sf /var/opt /opt 2>/dev/null || true
-
-RUN mkinitcpio -P
