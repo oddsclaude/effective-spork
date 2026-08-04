@@ -11,3 +11,13 @@ systemctl --user enable pipewire-pulse
 systemctl --user enable wireplumber
 systemctl enable bluetooth.service
 systemctl enable docker.service
+
+pacman-key --init
+if [[ $IMAGE_FLAVOR == cachy* ]]; then
+  pacman-key --populate archlinux
+else
+  pacman-key --populate archlinux
+fi
+
+# perform system update
+pacman -Syu --noconfirm >/dev/null
