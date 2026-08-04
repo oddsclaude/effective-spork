@@ -224,5 +224,5 @@ RUN ln -sf /var/opt /opt 2>/dev/null || true
 # the other desktop targets.
 FROM base-no-de AS hyprland
 RUN --mount=type=bind,from=context,source=/,target=/run/context \
-    /run/context/build_scripts/desktop/install-desktop.sh hyprland
+    /run/context/build_files/desktop.sh hyprland
 RUN ln -sf /var/opt /opt 2>/dev/null || true
