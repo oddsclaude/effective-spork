@@ -1,16 +1,3 @@
-# Containerfile.arch — Arch Linux bootcification.
-#
-# Builds a bootc-compatible Arch Linux base image from the stock
-# archlinux/archlinux container. Adapted from the tuna-os bootc pattern,
-# trimmed down to a single personal image (no manifest-driven multi-desktop
-# matrix, no shared "common" tunaos image, no desktop-experience contract
-# checks — those all depended on tunaos infrastructure this repo doesn't
-# have).
-#
-# Usage:
-#   buildah build --target=base --file Containerfile.arch .
-#   buildah build --target=hyprland --file Containerfile.arch .
-
 ARG BASE_IMAGE="docker.io/archlinux/archlinux:latest@sha256:e04e36411bd1a0c15cb6772535c2ab7d1a224380293720bb338f206eb8be47ef"
 ARG BREW_IMAGE="ghcr.io/ublue-os/brew:latest"
 
@@ -36,14 +23,10 @@ RUN git clone --depth 1 https://github.com/coreos/bootupd.git /tmp/bootupd && \
     make && \
     make install DESTDIR=/output
 
-# ── Context layer ────────────────────────────────────────────────────────────
-# Only what this Containerfile actually uses: system_files (host config
-# overlay) and build_files (this-repo's own build scripts, e.g. desktop.sh).
 FROM scratch AS context
 COPY system_files /files
 COPY build_files /build_files
 
-# ── Base system (bootc-compatible Arch) ──────────────────────────────────────
 FROM ${BASE_IMAGE} AS base
 
 ARG BASE_IMAGE
@@ -59,17 +42,12 @@ ENV IMAGE_VENDOR=${IMAGE_VENDOR}
 ENV IMAGE_REGISTRY=${IMAGE_REGISTRY}
 ENV ENABLE_NVIDIA=${ENABLE_NVIDIA}
 
-# Install bootc from builder stage
 COPY --from=bootc-builder /output /
 
-# Move /var to /usr/lib/sysimage for ostree/pacman compatibility
-# (pacman writes to /var/lib/pacman, /var/cache/pacman — these need to
-# survive ostree deployments via the sysimage path)
 RUN grep "= */var" /etc/pacman.conf | sed "/= *\/var/s/.*=// ; s/ //" | \
     xargs -n1 sh -c 'mkdir -p "/usr/lib/sysimage/$(dirname $(echo $1 | sed "s@/var/@@"))" && mv -v "$1" "/usr/lib/sysimage/$(echo "$1" | sed "s@/var/@@")"' '' && \
     sed -i -e "/= *\/var/ s/^#//" -e "s@= */var@= /usr/lib/sysimage@g" -e "/DownloadUser/d" /etc/pacman.conf
 
-# Full system refresh + bootc base packages
 RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm --needed \
         base \
@@ -119,7 +97,6 @@ RUN pacman -Syu --noconfirm && \
 COPY --from=brew /system_files /
 RUN systemctl enable brew-setup.service
 
-# Build initramfs.
 RUN mkdir -p /usr/lib/dracut/dracut.conf.d/ && \
     printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
         > /usr/lib/dracut/dracut.conf.d/30-fix-bootc-module.conf && \
@@ -127,7 +104,6 @@ RUN mkdir -p /usr/lib/dracut/dracut.conf.d/ && \
         > /usr/lib/dracut/dracut.conf.d/30-bootc-container-build.conf && \
     dracut --force "$(find /usr/lib/modules -maxdepth 1 -type d | grep -v '\.img' | tail -1)/initramfs.img"
 
-# Set up bootc/ostree filesystem layout
 RUN rm -rf /boot /home /root /usr/local /srv /opt /mnt \
         /usr/lib/sysimage/log /usr/lib/sysimage/cache/pacman/pkg && \
     for d in /var/* /var/.[!.]*; do [ -d "$d" ] && ! mountpoint -q "$d" 2>/dev/null && rm -rf "$d" 2>/dev/null || true; done && \
@@ -145,8 +121,6 @@ RUN rm -rf /boot /home /root /usr/local /srv /opt /mnt \
     printf '[composefs]\nenabled = yes\n[sysroot]\nreadonly = true\n' \
         > /usr/lib/ostree/prepare-root.conf
 
-# systemd-firstboot asks the CONSOLE for a timezone and blocks there forever
-# on a bootc image (uninitialized machine-id is its trigger condition).
 RUN systemctl mask systemd-firstboot.service
 
 LABEL containers.bootc 1
@@ -156,8 +130,9 @@ RUN bootc container lint
 
 RUN ln -sf /var/opt /opt 2>/dev/null || true
 
-# ── hyprland ───────────────────────────────────────────────────────────────
 FROM base AS hyprland
 RUN --mount=type=bind,from=context,source=/,target=/run/context \
     /run/context/build_files/desktop.sh hyprland
 RUN ln -sf /var/opt /opt 2>/dev/null || true
+
+RUN mkinitcpio -P
