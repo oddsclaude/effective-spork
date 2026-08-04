@@ -4,7 +4,7 @@ set -ouex pipefail
 
 cp -avf "/ctx/system_files"/. /
 
-curl -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm
+curl -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm --init none
 
 dnf5 -y copr enable lionheartp/Hyprland
 
