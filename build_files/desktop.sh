@@ -44,6 +44,12 @@ if [[ "${ENABLE_NVIDIA:-0}" == "1" ]]; then
 		vulkan-icd-loader \
 		lib32-vulkan-icd-loader
 
+  if pacman -Qq linux-cachyos &>/dev/null; then
+		pacman -S --noconfirm --needed linux-cachyos-headers
+	else
+		pacman -S --noconfirm --needed linux-headers
+	fi
+
 # install-desktop.sh — Arch/pacman-only desktop installer driven by YAML manifests.
 #
 # Stripped from the original multi-distro version (apt/zypper/emerge/dnf paths
