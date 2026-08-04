@@ -4,7 +4,78 @@ set -ouex pipefail
 
 cp -avf "/ctx/system_files"/. /
 
-pacman -Syu --noconfirm ghostty git waybar rofi mate-polkit flatpak pipewire pavucontrol wireplumber pipewire fastfetch pipewire-pulse bluetui bluetui steam base-devel alacritty firefox docker docker-compose docker-buildx ollama-cuda niri
+pacman -Syu --noconfirm ghostty \
+  git \
+  waybar \
+  rofi \
+  mate-polkit \
+  flatpak \
+  pipewire \
+  pavucontrol \
+  wireplumber \
+  pipewire \
+  fastfetch \
+  pipewire-pulse \
+  bluetui \
+  bluetui \
+  steam \
+  base-devel \
+  alacritty \
+  firefox \
+  docker \
+  docker-compose \
+  docker-buildx \
+  ollama-cuda \
+  niri \
+  ffmpeg \
+  ffmpegthumbs \
+  gst-libav \
+  gst-plugins-bad \
+  gst-plugins-base \
+  gst-plugins-good \
+  gst-plugins-ugly \
+  libglvnd \
+  librsvg \
+  mpv-mpris \
+  playerctl \
+  plymouth \
+  alsa-firmware \
+  linux-firmware-intel \
+  pipewire \
+  pipewire-audio \
+  pipewire-ffado \
+  pipewire-libcamera \
+  pipewire-pulse \
+  pipewire-zeroconf \
+  sof-firmware \
+  wireplumber \
+  firewalld \
+  libmtp \
+  networkmanager \
+  nss-mdns \
+  samba \
+  smbclient \
+  udiskie \
+  udisks2 \
+  crun \
+  distrobox \
+  gnu-free-fonts \
+  gsfonts \
+  noto-fonts \
+  noto-fonts-cjk \
+  noto-fonts-emoji \
+  noto-fonts-extra \
+  ttf-arphic-uming \
+  ttf-baekmuk \
+  ttf-croscore \
+  ttf-dejavu \
+  ttf-droid \
+  ttf-ibm-plex \
+  ttf-overpass \
+  unicode-emoji \
+  wqy-microhei \
+  bazaar \
+  mission-control
 
 systemctl --user enable pipewire
 systemctl --user enable pipewire-pulse
@@ -19,5 +90,9 @@ else
   pacman-key --populate archlinux
 fi
 
-# perform system update
 pacman -Syu --noconfirm >/dev/null
+
+KERNEL_VERSION="$(basename "$(find /usr/lib/modules -maxdepth 1 -type d | grep -v -E "\.img$" | tail -n 1)")"
+DRACUT_NO_XATTR=1 dracut --force --no-hostonly --reproducible --zstd --verbose --kver "$KERNEL_VERSION" "/usr/lib/modules/$KERNEL_VERSION/initramfs.img"
+
+rm -rf /tmp/* /run/*
