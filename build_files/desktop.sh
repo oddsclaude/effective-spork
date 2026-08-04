@@ -1,15 +1,4 @@
 #!/usr/bin/env bash
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-# desktop.sh — installs a desktop flavor's packages directly (no YAML
-# manifest, no shared lib.sh). Trimmed from tuna-os's manifest-driven
-# install-desktop.sh: that version depended on build_scripts/lib.sh and
-# manifests/desktops/<name>.yaml, neither of which exist in this repo. This
-# repo only ever builds one flavor at a time, so a per-flavor case statement
-# is simpler than carrying manifest-parsing machinery for a single entry.
-#
-# Usage:
 #   /run/context/build_files/desktop.sh <desktop>
 
 set -xeuo pipefail
