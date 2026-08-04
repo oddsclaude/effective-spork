@@ -44,8 +44,6 @@ if [[ "${ENABLE_NVIDIA:-0}" == "1" ]]; then
 		vulkan-icd-loader \
 		lib32-vulkan-icd-loader
 
-=======
->>>>>>> oddsclaude-trim-and-cache
 # install-desktop.sh — Arch/pacman-only desktop installer driven by YAML manifests.
 #
 # Stripped from the original multi-distro version (apt/zypper/emerge/dnf paths
@@ -122,9 +120,6 @@ if [[ -n "${_TD_CACHYOS}" ]]; then
 fi
 
 readarray -t _TD_PKGS < <($YQ -r ".packages.pacman[]" "${_TD_MANIFEST}" 2>/dev/null || true)
-# An empty list here is a misconfigured manifest, not "nothing to do" — it
-# would silently produce an image tagged "${_TD_DESKTOP}" with no desktop in
-# it and still exit 0. Fail loudly instead.
 if ((${#_TD_PKGS[@]} == 0)); then
 	echo "ERROR: ${_TD_MANIFEST} has no .packages.pacman list." >&2
 	echo "       Installing no packages would yield an image tagged" >&2
@@ -133,12 +128,6 @@ if ((${#_TD_PKGS[@]} == 0)); then
 fi
 pacman -S --noconfirm --needed "${_TD_PKGS[@]}"
 
-# ── NVIDIA ────────────────────────────────────────────────────────────────────
-# Previously a dead ARG/ENV: ENABLE_NVIDIA was declared on base-no-de in the
-# Containerfile and inherited here, but nothing in the original script ever
-# read it. Wired here instead of per-manifest since the driver stack itself
-# doesn't vary by desktop — only whether session/compositor config needs an
-# extra nudge for Wayland (hyprland/niri) vs Xorg-based sessions does.
 if [[ "${ENABLE_NVIDIA:-0}" == "1" ]]; then
 	echo "ENABLE_NVIDIA=1 — installing nvidia driver stack"
 	_TD_NVIDIA_PKGS=(
@@ -152,63 +141,22 @@ if [[ "${ENABLE_NVIDIA:-0}" == "1" ]]; then
 	)
 	pacman -S --noconfirm --needed "${_TD_NVIDIA_PKGS[@]}"
 
-	# DKMS needs the matching headers for whatever kernel package landed in
-	# base-no-de. linux-headers is the safe default; swap to
-	# linux-cachyos-headers if this ever builds on a cachyos kernel base.
-<<<<<<< HEAD
-=======
->>>>>>> 72a4608 (Added contents of files)
->>>>>>> oddsclaude-trim-and-cache
 	if pacman -Qq linux-cachyos &>/dev/null; then
 		pacman -S --noconfirm --needed linux-cachyos-headers
 	else
 		pacman -S --noconfirm --needed linux-headers
 	fi
 
-<<<<<<< HEAD
-	# KMS + early modeset: without this, hyprland/niri (both wlroots-based)
-	# frequently fail to find a DRM device or fall back to software rendering
-	# on nvidia. Standard fix, not optional for a Wayland-first image.
-=======
-<<<<<<< HEAD
-	# KMS + early modeset: without this, hyprland (wlroots-based) frequently
-	# fails to find a DRM device or falls back to software rendering.
-=======
-	# KMS + early modeset: without this, hyprland/niri (both wlroots-based)
-	# frequently fail to find a DRM device or fall back to software rendering
-	# on nvidia. Standard fix, not optional for a Wayland-first image.
->>>>>>> 72a4608 (Added contents of files)
->>>>>>> oddsclaude-trim-and-cache
 	mkdir -p /usr/lib/dracut/dracut.conf.d/
 	printf 'add_drivers+=" nvidia nvidia_modeset nvidia_uvm nvidia_drm "\n' \
 		> /usr/lib/dracut/dracut.conf.d/30-nvidia-kms.conf
 	printf 'options nvidia_drm modeset=1 fbdev=1\n' \
 		> /etc/modprobe.d/nvidia.conf
 
-<<<<<<< HEAD
-	# Wayland compositors need this exported for GBM/EGL to pick the nvidia
-	# vendor icd correctly. hyprland reads it from the environment at
-	# session start via uwsm/systemd --user, not from a dedicated config key.
-=======
-<<<<<<< HEAD
-	# hyprland reads these from the environment at session start via
-	# uwsm/systemd --user, not from a dedicated config key.
-=======
-	# Wayland compositors need this exported for GBM/EGL to pick the nvidia
-	# vendor icd correctly. hyprland reads it from the environment at
-	# session start via uwsm/systemd --user, not from a dedicated config key.
->>>>>>> 72a4608 (Added contents of files)
->>>>>>> oddsclaude-trim-and-cache
 	mkdir -p /etc/environment.d
 	printf 'LIBVA_DRIVER_NAME=nvidia\nGBM_BACKEND=nvidia-drm\n__GLX_VENDOR_LIBRARY_NAME=nvidia\n' \
 		> /etc/environment.d/10-nvidia.conf
 fi
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
->>>>>>> oddsclaude-trim-and-cache
-
 # Enable display manager
 _TD_DM=$($YQ -r '.display_manager' "${_TD_MANIFEST}")
 if [[ -n "${_TD_DM}" && "${_TD_DM}" != "null" ]]; then
@@ -281,7 +229,3 @@ EOF
 fi
 
 printf "::endgroup::\n"
-<<<<<<< HEAD
-=======
->>>>>>> 72a4608 (Added contents of files)
->>>>>>> oddsclaude-trim-and-cache
