@@ -1,4 +1,3 @@
----
 name: Build container image
 on:
   pull_request:
@@ -66,6 +65,19 @@ jobs:
           echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
           echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
 
+      # Registry layer cache lives in its own GHCR repo, shared across every
+      # run so rebuilds reuse layers instead of starting from scratch each
+      # time. CACHE_TO is only set on trusted (non-PR) builds so PRs can
+      # read the cache but never write to it, mirroring tuna-os's buildah
+      # registry cache pattern.
+      - name: Configure registry layer cache
+        run: |
+          CACHE_REPO="${IMAGE_REGISTRY}/${IMAGE_NAME}-cache"
+          echo "CACHE_FROM=${CACHE_REPO}" >> ${GITHUB_ENV}
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "CACHE_TO=${CACHE_REPO}" >> ${GITHUB_ENV}
+          fi
+
       # This actually builds the container image
       - name: Build Image
         id: build-image
@@ -130,6 +142,44 @@ jobs:
 
           echo "digest=${digest}" >> $GITHUB_OUTPUT
 
+      # Publishes the installed package list as an OCI artifact next to the
+      # image, so you can diff what changed between builds without pulling
+      # and inspecting the full image. Cheap (~1s) compared to a full SBOM,
+      # which can OOM on desktop-sized images. Borrowed from tuna-os.
+      - name: Publish package manifest
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        continue-on-error: true
+        env:
+          ALIAS_TAGS: ${{ steps.gen-build-tags.outputs.alias_tags }}
+        run: |
+          set -euo pipefail
+          OUT="packages-${IMAGE_NAME}-${DEFAULT_TAG}.txt"
+
+          sudo podman run --rm --entrypoint sh "${IMAGE_NAME}:${DEFAULT_TAG}" -c '
+            if   command -v rpm        >/dev/null 2>&1; then rpm -qa --qf "%{NAME}\t%{VERSION}-%{RELEASE}\n"
+            elif command -v dpkg-query >/dev/null 2>&1; then dpkg-query -W -f "${Package}\t${Version}\n"
+            elif command -v pacman     >/dev/null 2>&1; then pacman -Q | tr " " "\t"
+            elif command -v qlist      >/dev/null 2>&1; then qlist -ICv
+            else echo "UNKNOWN-PACKAGE-MANAGER" >&2; exit 1
+            fi' | LC_ALL=C sort -u | sudo tee "$OUT" > /dev/null
+          sudo chown "$USER:$(id -gn)" "$OUT"
+
+          COUNT=$(wc -l < "$OUT")
+          echo "${COUNT} packages recorded"
+          head -3 "$OUT"
+
+          command -v oras >/dev/null 2>&1 || {
+            curl -fsSL "https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz" \
+              | sudo tar -xz -C /usr/local/bin oras
+          }
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+          for tag in ${ALIAS_TAGS}; do
+            oras push "${IMAGE_REGISTRY}/${IMAGE_NAME}:${tag}.packages" \
+              --artifact-type application/vnd.effective-spork.packages.v1 \
+              "${OUT}:text/plain"
+          done
+
       # This section is optional and only needs to be enabled if you plan on distributing
       # your project for others to consume. You will need to create a public and private key
       # using Cosign and save the private key as a repository secret in Github for this workflow
@@ -153,4 +203,3 @@ jobs:
           # https://github.com/coreos/rpm-ostree/issues/5509
           # use old bundle format, so we can use newer cosign 3.X.X instead of 2.X.X
           cosign sign -y --new-bundle-format=false --use-signing-config=false --key env://COSIGN_PRIVATE_KEY ${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}
-

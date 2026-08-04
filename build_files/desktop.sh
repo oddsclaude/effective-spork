@@ -1,4 +1,62 @@
 #!/usr/bin/env bash
+<<<<<<< HEAD
+=======
+<<<<<<< HEAD
+# desktop.sh — installs a desktop flavor's packages directly (no YAML
+# manifest, no shared lib.sh). Trimmed from tuna-os's manifest-driven
+# install-desktop.sh: that version depended on build_scripts/lib.sh and
+# manifests/desktops/<name>.yaml, neither of which exist in this repo. This
+# repo only ever builds one flavor at a time, so a per-flavor case statement
+# is simpler than carrying manifest-parsing machinery for a single entry.
+#
+# Usage:
+#   /run/context/build_files/desktop.sh <desktop>
+
+set -xeuo pipefail
+
+DESKTOP="${1:?Usage: desktop.sh <desktop>}"
+
+case "${DESKTOP}" in
+hyprland)
+	pacman -S --noconfirm --needed \
+		hyprland \
+		hypridle \
+		hyprlock \
+		hyprpaper \
+		xdg-desktop-portal-hyprland \
+		waybar \
+		greetd \
+		greetd-tuigreet \
+		kitty \
+		polkit-gnome \
+		qt5-wayland \
+		qt6-wayland
+
+	systemctl enable greetd.service
+	systemctl set-default graphical.target
+	;;
+*)
+	echo "ERROR: unknown desktop '${DESKTOP}'" >&2
+	exit 1
+	;;
+esac
+
+# ── NVIDIA ────────────────────────────────────────────────────────────────────
+# ENABLE_NVIDIA is declared as an ARG/ENV on the base stage in
+# Containerfile.arch and inherited here.
+if [[ "${ENABLE_NVIDIA:-0}" == "1" ]]; then
+	echo "ENABLE_NVIDIA=1 — installing nvidia driver stack"
+	pacman -S --noconfirm --needed \
+		nvidia-open-dkms \
+		nvidia-utils \
+		nvidia-settings \
+		lib32-nvidia-utils \
+		egl-wayland \
+		vulkan-icd-loader \
+		lib32-vulkan-icd-loader
+
+=======
+>>>>>>> oddsclaude-trim-and-cache
 # install-desktop.sh — Arch/pacman-only desktop installer driven by YAML manifests.
 #
 # Stripped from the original multi-distro version (apt/zypper/emerge/dnf paths
@@ -108,28 +166,59 @@ if [[ "${ENABLE_NVIDIA:-0}" == "1" ]]; then
 	# DKMS needs the matching headers for whatever kernel package landed in
 	# base-no-de. linux-headers is the safe default; swap to
 	# linux-cachyos-headers if this ever builds on a cachyos kernel base.
+<<<<<<< HEAD
+=======
+>>>>>>> 72a4608 (Added contents of files)
+>>>>>>> oddsclaude-trim-and-cache
 	if pacman -Qq linux-cachyos &>/dev/null; then
 		pacman -S --noconfirm --needed linux-cachyos-headers
 	else
 		pacman -S --noconfirm --needed linux-headers
 	fi
 
+<<<<<<< HEAD
 	# KMS + early modeset: without this, hyprland/niri (both wlroots-based)
 	# frequently fail to find a DRM device or fall back to software rendering
 	# on nvidia. Standard fix, not optional for a Wayland-first image.
+=======
+<<<<<<< HEAD
+	# KMS + early modeset: without this, hyprland (wlroots-based) frequently
+	# fails to find a DRM device or falls back to software rendering.
+=======
+	# KMS + early modeset: without this, hyprland/niri (both wlroots-based)
+	# frequently fail to find a DRM device or fall back to software rendering
+	# on nvidia. Standard fix, not optional for a Wayland-first image.
+>>>>>>> 72a4608 (Added contents of files)
+>>>>>>> oddsclaude-trim-and-cache
 	mkdir -p /usr/lib/dracut/dracut.conf.d/
 	printf 'add_drivers+=" nvidia nvidia_modeset nvidia_uvm nvidia_drm "\n' \
 		> /usr/lib/dracut/dracut.conf.d/30-nvidia-kms.conf
 	printf 'options nvidia_drm modeset=1 fbdev=1\n' \
 		> /etc/modprobe.d/nvidia.conf
 
+<<<<<<< HEAD
 	# Wayland compositors need this exported for GBM/EGL to pick the nvidia
 	# vendor icd correctly. hyprland reads it from the environment at
 	# session start via uwsm/systemd --user, not from a dedicated config key.
+=======
+<<<<<<< HEAD
+	# hyprland reads these from the environment at session start via
+	# uwsm/systemd --user, not from a dedicated config key.
+=======
+	# Wayland compositors need this exported for GBM/EGL to pick the nvidia
+	# vendor icd correctly. hyprland reads it from the environment at
+	# session start via uwsm/systemd --user, not from a dedicated config key.
+>>>>>>> 72a4608 (Added contents of files)
+>>>>>>> oddsclaude-trim-and-cache
 	mkdir -p /etc/environment.d
 	printf 'LIBVA_DRIVER_NAME=nvidia\nGBM_BACKEND=nvidia-drm\n__GLX_VENDOR_LIBRARY_NAME=nvidia\n' \
 		> /etc/environment.d/10-nvidia.conf
 fi
+<<<<<<< HEAD
+=======
+<<<<<<< HEAD
+=======
+>>>>>>> oddsclaude-trim-and-cache
 
 # Enable display manager
 _TD_DM=$($YQ -r '.display_manager' "${_TD_MANIFEST}")
@@ -203,3 +292,7 @@ EOF
 fi
 
 printf "::endgroup::\n"
+<<<<<<< HEAD
+=======
+>>>>>>> 72a4608 (Added contents of files)
+>>>>>>> oddsclaude-trim-and-cache
