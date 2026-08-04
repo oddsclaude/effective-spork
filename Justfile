@@ -91,6 +91,10 @@ sudoif command *args:
 #
 # This will build an image 'myimage:mytag'
 #
+# Registry layer cache: set CACHE_FROM (and CACHE_TO, on trusted builds only)
+# to a registry ref to reuse layers across CI runs instead of rebuilding from
+# scratch every time. Both are empty by default, so local/dev builds are
+# unaffected. Borrowed from tuna-os's buildah registry cache pattern.
 
 # Build the image using the specified parameters
 build $target_image=image_name $tag=default_tag:
@@ -121,12 +125,20 @@ build $target_image=image_name $tag=default_tag:
     LABELS+=("--label" "org.opencontainers.image.title={{ image_name }}")
     LABELS+=("--label" "org.opencontainers.image.vendor={{ repo_organization }}")
 
+    # Registry layer cache — no-ops unless CACHE_FROM/CACHE_TO are set.
+    if [[ -n "${CACHE_FROM:-}" ]]; then
+        BUILD_ARGS+=("--layers" "--cache-from" "${CACHE_FROM}")
+    fi
+    if [[ -n "${CACHE_TO:-}" ]]; then
+        BUILD_ARGS+=("--cache-to" "${CACHE_TO}")
+    fi
+
     # This actually builds the image!
     PODMAN_BUILD_ARGS=("${BUILD_ARGS[@]}" "${LABELS[@]}" --pull=newer --tag "${target_image}:${tag}" --file Containerfile)
 
     podman build "${PODMAN_BUILD_ARGS[@]}" .
 
-# Split the image for smaller updates (New)!
+# Split the image for smaller updates
 rechunk $target_image=image_name $tag=default_tag:
     #!/usr/bin/env bash
 
@@ -162,35 +174,6 @@ rechunk $target_image=image_name $tag=default_tag:
 
     CHUNKED_IMAGE="$(podman pull "oci:${CHUNKAH_OUTPUT_DIR}/chunked")"
     podman tag "${CHUNKED_IMAGE}" "${target_image}:${tag}"
-
-# Split the image for smaller updates (Classical)!
-ostree-rechunk $target_image=image_name $tag=default_tag:
-    #!/usr/bin/env bash
-
-    set -xeuo pipefail
-
-    # TODO: This is the only blocker for rootless CI
-    # https://github.com/coreos/rpm-ostree/issues/5346
-    if [[ ! "${UID}" -eq "0" ]]; then
-      echo "This needs to run as root."
-      exit 1
-    fi
-
-    # You can use your own base image here to avoid pulling fedora-bootc
-    RPM_OSTREE_CHUNKER_IMAGE="quay.io/fedora/fedora-bootc:latest"
-
-    podman run --rm \
-      --pull=newer \
-      --privileged \
-      -v "/var/lib/containers:/var/lib/containers" \
-      --entrypoint /usr/bin/rpm-ostree \
-      "${RPM_OSTREE_CHUNKER_IMAGE}" \
-      compose build-chunked-oci \
-      --max-layers 127 \
-      --format-version=2 \
-      --bootc \
-      --from "localhost/${target_image}:${tag}" \
-      --output containers-storage:"localhost/${target_image}:${tag}"
 
 # Generate Default Tag
 [group('Utility')]
@@ -349,10 +332,6 @@ _rebuild-bib $target_image $tag $type $config: (build target_image tag) && (_bui
 [group('Build Virtal Machine Image')]
 build-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "qcow2" "disk_config/disk.toml")
 
-# Build a RAW virtual machine image
-[group('Build Virtal Machine Image')]
-build-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "raw" "disk_config/disk.toml")
-
 # Build an ISO virtual machine image
 [group('Build Virtal Machine Image')]
 build-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "iso" "disk_config/iso.toml")
@@ -360,10 +339,6 @@ build-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_build
 # Rebuild a QCOW2 virtual machine image
 [group('Build Virtal Machine Image')]
 rebuild-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "qcow2" "disk_config/disk.toml")
-
-# Rebuild a RAW virtual machine image
-[group('Build Virtal Machine Image')]
-rebuild-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "raw" "disk_config/disk.toml")
 
 # Rebuild an ISO virtual machine image
 [group('Build Virtal Machine Image')]
@@ -414,10 +389,6 @@ _run-vm $target_image $tag $type $config:
 # Run a virtual machine from a QCOW2 image
 [group('Run Virtal Machine')]
 run-vm-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "qcow2" "disk_config/disk.toml")
-
-# Run a virtual machine from a RAW image
-[group('Run Virtal Machine')]
-run-vm-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "raw" "disk_config/disk.toml")
 
 # Run a virtual machine from an ISO
 [group('Run Virtal Machine')]
