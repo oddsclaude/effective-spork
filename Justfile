@@ -157,7 +157,7 @@ rechunk $target_image=image_name $tag=default_tag:
     trap 'rm -f "${CHUNKAH_CONFIG_FILE}"; rm -rf "${CHUNKAH_OUTPUT_DIR}"' EXIT
     podman inspect "${target_image}:${tag}" > "${CHUNKAH_CONFIG_FILE}"
 
-podman run --rm \
+    podman run --rm \
 	--mount=type=image,src="${target_image}:${tag}",target=/chunkah \
 	-v "${CHUNKAH_CONFIG_FILE}:/chunkah-config.json:ro,Z" \
 	-v "${CHUNKAH_OUTPUT_DIR}:/run/out:Z" \
