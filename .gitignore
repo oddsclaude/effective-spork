@@ -3,3 +3,6 @@ _build_*
 output
 _build-*/**
 *_chunkah_*
+mkosi.output/
+mkosi.cache/
+mkosi.tools/

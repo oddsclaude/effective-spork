@@ -4,15 +4,18 @@ This repository is meant to be a template for building your own custom [bootc](h
 
 > [!NOTE]
 > This repo's image build was migrated from a Containerfile/BlueBuild-style
-> OCI build (`Containerfile.arch` + `build_files/`) to
-> [mkosi](https://github.com/systemd/mkosi) (`mkosi.conf` +
+> OCI build to [mkosi](https://github.com/systemd/mkosi) (`mkosi.conf` +
 > `mkosi.profiles/`), modeled on how
 > [zirconium-dev/zirconium](https://github.com/zirconium-dev/zirconium) does
-> it. The base distribution is still Arch Linux. `Containerfile.arch` is
-> kept around for now since the `build-arch.yml` workflow's variant/flavor
-> pipeline (`build-variant.yml` -> `reusable-build-image.yml`) still depends
-> on it and wasn't touched as part of this migration -- see that workflow's
-> comments / the migration PR description for details.
+> it. The base distribution is still Arch Linux. `Containerfile.arch`,
+> `build_files/`, and `system_files/` have been removed -- fully superseded
+> by `mkosi.conf`/`mkosi.profiles/`/`mkosi.extra/`. The old
+> `build-arch.yml` -> `build-variant.yml` -> `reusable-build-image.yml`
+> workflow chain was also removed rather than migrated: it turned out to
+> already be non-functional independent of this migration (it referenced
+> `.github/build-config.yml` and a `reusable-build-artifacts.yml`, neither
+> of which exist in this repo, and used variant names that don't match
+> anything here) -- see the migration PR description for details.
 
 # Community
 
@@ -131,7 +134,7 @@ This should queue your image for the next reboot, which you can do immediately a
 
 Profiles are combined at build time (see `just build` in the Justfile below). Each profile directory can contain its own `mkosi.conf` (for `Packages=` and other settings), `mkosi.prepare.chroot` (runs after packages install, **with** network access -- for fetching/building things from source), and `mkosi.postinst.chroot` (runs after that, **without** network access -- for installing what prepare fetched/built and doing final setup). The top-level [`mkosi.finalize.chroot`](./mkosi.finalize.chroot) always runs and sets up the ostree/bootc directory layout (pacman state relocation, `/var` symlinks, etc.) regardless of which profiles are selected.
 
-[`mkosi.extra/`](./mkosi.extra) mirrors what `system_files/` used to do: anything under it gets copied verbatim into the image at `/`.
+[`mkosi.extra/`](./mkosi.extra) replaces the old `system_files/`: anything under it gets copied verbatim into the image at `/`.
 
 ## build.yml
 
