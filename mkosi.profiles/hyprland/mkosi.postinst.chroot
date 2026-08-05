@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Translated from build_files/desktop.sh's `hyprland` case plus the service
+# enablement calls from build_files/build.sh.
+#
+# NOTE: the old build.sh enabled *both* sddm and greetd (two competing
+# display managers) -- almost certainly a mistake. desktop.sh's hyprland
+# case explicitly enables greetd+tuigreet and sets the graphical target, so
+# I kept that as the actually-enabled DM and left sddm installed-but-not-
+# enabled. Flip this if you actually wanted sddm.
+#
+# Also: build.sh used `systemctl --user enable ...` for the pipewire stack,
+# which is a no-op/error at image-build time since there's no logged-in
+# user session in a chroot. Used `systemctl --global enable` instead, which
+# is the correct way to pre-enable user units for all users on an image.
+set -xeuo pipefail
+
+systemctl enable greetd.service
+systemctl set-default graphical.target
+
+systemctl enable sshd.service
+systemctl enable bluetooth.service
+systemctl enable docker.service
+systemctl --global enable pipewire.service pipewire-pulse.service wireplumber.service
+
+KERNEL_VERSION="$(basename "$(find /usr/lib/modules -maxdepth 1 -type d | grep -v -E '\.img$' | tail -n 1)")"
+DRACUT_NO_XATTR=1 dracut --force --no-hostonly --reproducible --zstd --verbose --kver "$KERNEL_VERSION" "/usr/lib/modules/$KERNEL_VERSION/initramfs.img"

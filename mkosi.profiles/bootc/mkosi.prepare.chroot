@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Builds bootc and bootupd from source, same as Containerfile.arch's
+# `bootc-builder` stage. Runs in the mkosi.prepare.chroot phase (after
+# [Content] Packages= are installed, so `make`/`git`/`rust`/`go` from
+# mkosi.profiles/bootc/mkosi.conf are already present, and *with* network
+# access for the git clones and Rust/Go module downloads). Output is cached
+# under $SRCDIR/cache so a second build doesn't recompile from scratch.
+set -xeuo pipefail
+
+mkdir -p "${SRCDIR}/cache"
+
+if [ ! -d "${SRCDIR}/cache/bootc" ]; then
+	git clone --depth 1 https://github.com/bootc-dev/bootc.git "${SRCDIR}/cache/bootc"
+fi
+if [ ! -d "${SRCDIR}/cache/bootc-output" ]; then
+	( cd "${SRCDIR}/cache/bootc" && make bin && make install-all DESTDIR="${SRCDIR}/cache/bootc-output" )
+fi
+
+if [ ! -d "${SRCDIR}/cache/bootupd" ]; then
+	git clone --depth 1 https://github.com/coreos/bootupd.git "${SRCDIR}/cache/bootupd"
+fi
+if [ ! -d "${SRCDIR}/cache/bootupd-output" ]; then
+	( cd "${SRCDIR}/cache/bootupd" && make && make install DESTDIR="${SRCDIR}/cache/bootupd-output" )
+fi

@@ -1,0 +1,50 @@
+#!/bin/bash
+# Recreates the ostree/bootc directory layout that Containerfile.arch used to
+# set up, translated to mkosi's script phases. This always runs, regardless
+# of which mkosi.profiles/* are selected, because every image this repo
+# builds needs to be a valid bootc target.
+#
+# NOTE ON ORDERING (please verify with a real build+boot):
+# Containerfile.arch relocated pacman's /var-based state to
+# /usr/lib/sysimage *before* installing any packages (by sed-editing
+# /etc/pacman.conf first, then running `pacman -Syu`), so packages landed
+# in the relocated location from the start.
+#
+# Under mkosi, [Content] Packages= are installed by mkosi itself before any
+# chroot script runs, so pacman has already written its db/cache under
+# /var/lib/pacman and /var/cache/pacman by the time this script executes.
+# This script instead relocates that data *after the fact* (mv, not a
+# pre-install redirect) and then repoints /etc/pacman.conf the same way, so
+# any *future* in-target pacman invocations (e.g. `bootc usroverlay`) keep
+# writing to /usr/lib/sysimage instead of /var, which bootc treats as
+# non-persistent/overlayed. This is functionally equivalent but the two
+# approaches haven't been tested side by side -- if pacman ever misbehaves
+# post-migration, look here first.
+set -xeuo pipefail
+
+grep "= */var" /etc/pacman.conf | sed "/= *\/var/s/.*=// ; s/ //" | \
+    xargs -n1 sh -c 'mkdir -p "/usr/lib/sysimage/$(dirname $(echo $1 | sed "s@/var/@@"))" && mv -v "$1" "/usr/lib/sysimage/$(echo "$1" | sed "s@/var/@@")"' ''
+sed -i -e "/= *\/var/ s/^#//" -e "s@= */var@= /usr/lib/sysimage@g" -e "/DownloadUser/d" /etc/pacman.conf
+
+rm -rf /boot /home /root /usr/local /srv /opt /mnt \
+    /usr/lib/sysimage/log /usr/lib/sysimage/cache/pacman/pkg
+for d in /var/* /var/.[!.]*; do
+    [ -d "$d" ] && ! mountpoint -q "$d" 2>/dev/null && rm -rf "$d" 2>/dev/null || true
+done
+rm -rf /usr/lib/sysimage/log /usr/lib/sysimage/cache/pacman/pkg 2>/dev/null || true
+
+mkdir -p /sysroot /boot /usr/lib/ostree /var /var/tmp
+ln -sT sysroot/ostree /ostree
+ln -sT var/roothome /root
+ln -sT var/srv /srv
+ln -sT var/opt /opt
+ln -sT var/mnt /mnt
+ln -sT var/home /home
+ln -sT ../var/usrlocal /usr/local
+
+printf 'd /var/opt 0755 root root -\nd /var/home 0755 root root -\nd /var/srv 0755 root root -\nd /var/mnt 0755 root root -\nd /var/usrlocal 0755 root root -\nd /var/roothome 0700 root root -\nd /var/tmp 1777 root root -\nd /run/media 0755 root root -\n' \
+    > /usr/lib/tmpfiles.d/bootc-base-dirs.conf
+printf '[composefs]\nenabled = yes\n[sysroot]\nreadonly = true\n' \
+    > /usr/lib/ostree/prepare-root.conf
+
+systemctl mask systemd-firstboot.service

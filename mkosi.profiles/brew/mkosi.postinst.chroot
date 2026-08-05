@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Installs the cached homebrew tarball and enables brew-setup.service, same
+# as Containerfile.arch's `COPY --from=brew /system_files /` +
+# `systemctl enable brew-setup.service`. The service itself (which extracts
+# the tarball to /var/home/linuxbrew/.linuxbrew on first boot) ships inside
+# the tarball, same as it did before.
+set -xeuo pipefail
+
+install -Dpm0644 -t /usr/share/ "${SRCDIR}/cache/homebrew.tar.zst"
+systemctl enable brew-setup.service

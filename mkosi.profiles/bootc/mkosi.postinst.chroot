@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Installs the bootc/bootupd binaries built by mkosi.prepare.chroot and
+# wires up the dracut bootc module, same as the end of Containerfile.arch's
+# `base` and `hyprland` stages. Runs offline (postinst.chroot has no
+# network by default), which is fine since everything needed is already in
+# $SRCDIR/cache from the prepare phase.
+set -xeuo pipefail
+
+cp -a "${SRCDIR}/cache/bootc-output"/. /
+cp -a "${SRCDIR}/cache/bootupd-output"/. /
+
+stat /usr/bin/bootc
+
+mkdir -p /usr/lib/dracut/dracut.conf.d/
+printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
+    > /usr/lib/dracut/dracut.conf.d/30-fix-bootc-module.conf
+printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc "\nomit_dracutmodules+=" tpm2-tss pcsc "\n' \
+    > /usr/lib/dracut/dracut.conf.d/30-bootc-container-build.conf
+dracut --force "$(find /usr/lib/modules -maxdepth 1 -type d | grep -v '\.img' | tail -1)/initramfs.img"
+
+bootc container lint
