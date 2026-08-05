@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# Installs the bootc/bootupd binaries built by mkosi.prepare.chroot and
-# wires up the dracut bootc module, same as the end of Containerfile.arch's
-# `base` and `hyprland` stages. Runs offline (postinst.chroot has no
-# network by default), which is fine since everything needed is already in
-# $SRCDIR/cache from the prepare phase.
+# Sanity-checks the installed bootc binary and runs the lint tunaOS's
+# finalize.sh runs post-bootcify. The actual initramfs build and
+# dpkg/ostree directory layout work happens in mkosi.profiles/base's
+# postinst and the top-level mkosi.finalize.chroot respectively, since
+# those need to happen exactly once regardless of which profiles are
+# combined, not duplicated here.
 set -xeuo pipefail
-
-cp -a "${SRCDIR}/cache/bootc-output"/. /
-cp -a "${SRCDIR}/cache/bootupd-output"/. /
 
 stat /usr/bin/bootc
 
-mkdir -p /usr/lib/dracut/dracut.conf.d/
-printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
-    > /usr/lib/dracut/dracut.conf.d/30-fix-bootc-module.conf
-printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc "\nomit_dracutmodules+=" tpm2-tss pcsc "\n' \
-    > /usr/lib/dracut/dracut.conf.d/30-bootc-container-build.conf
-dracut --force "$(find /usr/lib/modules -maxdepth 1 -type d | grep -v '\.img' | tail -1)/initramfs.img"
-
-bootc container lint
+# Non-fatal by default, matching tunaOS's finalize.sh (HOME=/tmp because
+# /root is a bind-mount target that doesn't exist yet at build time -- see
+# mkosi.finalize.chroot). Set BOOTC_LINT_FATAL=1 in the build environment to
+# make lint failures fail the build instead of just warning.
+if ! HOME=/tmp bootc container lint; then
+    if [[ "${BOOTC_LINT_FATAL:-0}" == "1" ]]; then
+        exit 1
+    fi
+    echo "WARNING: bootc container lint reported findings (non-fatal, set BOOTC_LINT_FATAL=1 to enforce)"
+fi

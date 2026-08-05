@@ -1,24 +1,12 @@
 #!/usr/bin/env bash
-# Mirrors the ENABLE_NVIDIA branch of build_files/desktop.sh: KMS/early
-# modeset dracut config plus the environment variables hyprland (wlroots)
-# needs to pick up the nvidia driver at session start.
+# UNVERIFIED, same caveat as mkosi.conf in this profile -- there is no
+# tunaOS Ubuntu nvidia path to translate this from, this is written from
+# general knowledge of how Ubuntu's nvidia-driver packages behave (they
+# install their own dkms/modprobe/initramfs hooks via debconf, unlike
+# Arch's nvidia-open-dkms which needed manual dracut config) and has not
+# been build-tested.
 set -xeuo pipefail
 
-if pacman -Qq linux-cachyos &>/dev/null; then
-    pacman -S --noconfirm --needed linux-cachyos-headers
-else
-    pacman -S --noconfirm --needed linux-headers
-fi
-
-mkdir -p /usr/lib/dracut/dracut.conf.d/
-printf 'add_drivers+=" nvidia nvidia_modeset nvidia_uvm nvidia_drm "\n' \
-    > /usr/lib/dracut/dracut.conf.d/30-nvidia-kms.conf
-printf 'options nvidia_drm modeset=1 fbdev=1\n' \
-    > /etc/modprobe.d/nvidia.conf
-
-mkdir -p /etc/environment.d
-printf 'LIBVA_DRIVER_NAME=nvidia\nGBM_BACKEND=nvidia-drm\n__GLX_VENDOR_LIBRARY_NAME=nvidia\n' \
-    > /etc/environment.d/10-nvidia.conf
-
-KERNEL_VERSION="$(basename "$(find /usr/lib/modules -maxdepth 1 -type d | grep -v -E '\.img$' | tail -n 1)")"
-DRACUT_NO_XATTR=1 dracut --force --no-hostonly --reproducible --zstd --verbose --kver "$KERNEL_VERSION" "/usr/lib/modules/$KERNEL_VERSION/initramfs.img"
+KVER_DIR="$(find /usr/lib/modules -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)"
+KVER="$(basename "${KVER_DIR}")"
+dracut --force --zstd --reproducible --no-hostonly "${KVER_DIR}/initramfs.img" "${KVER}"
