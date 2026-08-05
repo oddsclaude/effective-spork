@@ -194,7 +194,6 @@ image_name $target_image=image_name:
 
     echo "${image_name}"
 
-
 _rootful_load_image $target_image=image_name $tag=default_tag:
     #!/usr/bin/env bash
     set -eoux pipefail
