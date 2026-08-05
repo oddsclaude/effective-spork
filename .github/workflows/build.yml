@@ -83,13 +83,13 @@ jobs:
       # time. CACHE_TO is only set on trusted (non-PR) builds so PRs can
       # read the cache but never write to it, mirroring tuna-os's buildah
       # registry cache pattern.
-      # - name: Configure registry layer cache
-      #   run: |
-      #     CACHE_REPO="${IMAGE_REGISTRY}/${IMAGE_NAME}-cache"
-      #     echo "CACHE_FROM=${CACHE_REPO}" >> ${GITHUB_ENV}
-      #     if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-      #       echo "CACHE_TO=${CACHE_REPO}" >> ${GITHUB_ENV}
-      #     fi
+      - name: Configure registry layer cache
+        run: |
+          CACHE_REPO="${IMAGE_REGISTRY}/${IMAGE_NAME}-cache"
+          echo "CACHE_FROM=${CACHE_REPO}" >> ${GITHUB_ENV}
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "CACHE_TO=${CACHE_REPO}" >> ${GITHUB_ENV}
+          fi
 
       # This actually builds the container image
       - name: Build Image
