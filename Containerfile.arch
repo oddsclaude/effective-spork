@@ -1,101 +1,70 @@
-# Containerfile.arch — Arch Linux bootcification.
-#
-# Builds a bootc-compatible Arch Linux base image from the stock
-# archlinux/archlinux container. Based on bootcrew/mono/arch pattern.
-#
-# Usage:
-#   buildah build --target=base-no-de --file Containerfile.arch .
-#   buildah build --target=kde --file Containerfile.arch .
+# NOTE (mkosi migration): the primary image build for this repo now uses
+# mkosi (see mkosi.conf / mkosi.profiles/ at the repo root), driven by
+# build.yml + the Justfile. This Containerfile is kept only because
+# build-arch.yml -> build-variant.yml -> reusable-build-image.yml (a
+# separate, larger variant/flavor build pipeline) still references it
+# directly, and that pipeline was left untouched by the mkosi migration --
+# untangling/rewriting it wasn't attempted since its flavor-matrix + R2
+# upload logic is substantial and wasn't fully audited. If you don't need
+# that pipeline, consider retiring build-arch.yml/build-variant.yml along
+# with this file; otherwise treat this as the legacy build path.
 
 ARG BASE_IMAGE="docker.io/archlinux/archlinux:latest@sha256:e04e36411bd1a0c15cb6772535c2ab7d1a224380293720bb338f206eb8be47ef"
-ARG COMMON_IMAGE_REF="ghcr.io/projectbluefin/common:unpinned-must-override"
+ARG BREW_IMAGE="ghcr.io/ublue-os/brew:latest"
 
-ARG DESKTOP_FLAVOR="${DESKTOP_FLAVOR:-gnome}"
 ARG IMAGE_NAME
 ARG IMAGE_VENDOR
 ARG SHA_HEAD_SHORT
-ARG ENABLE_HWE="${ENABLE_HWE:-0}"
 ARG ENABLE_NVIDIA="${ENABLE_NVIDIA:-0}"
-ARG ENABLE_SSHD="${ENABLE_SSHD:-0}"
 ARG IMAGE_REGISTRY="ghcr.io"
-ARG IMAGE_NAME_VARIANT
+
+FROM ${BREW_IMAGE} AS brew
 
 # ── Build bootc and bootupd from source (Arch doesn't package them yet) ───────
 FROM ${BASE_IMAGE} AS bootc-builder
 ARG BOOTC_VERSION
 ARG BOOTUPD_VERSION
 RUN pacman -Syu --noconfirm make git rust go-md2man ostree glibc pkgconf
-RUN git clone --depth 1 --branch "${BOOTC_VERSION}" https://github.com/bootc-dev/bootc.git /tmp/bootc && \
+RUN git clone --depth 1 https://github.com/bootc-dev/bootc.git /tmp/bootc && \
     cd /tmp/bootc && \
     make bin && \
     make install-all DESTDIR=/output
-RUN git clone --depth 1 --branch "${BOOTUPD_VERSION}" https://github.com/coreos/bootupd.git /tmp/bootupd && \
+RUN git clone --depth 1 https://github.com/coreos/bootupd.git /tmp/bootupd && \
     cd /tmp/bootupd && \
     make && \
     make install DESTDIR=/output
 
-# ── Context layer ────────────────────────────────────────────────────────────
 FROM scratch AS context
 COPY system_files /files
-COPY system_files_overrides /overrides
-COPY build_scripts /build_scripts
-COPY manifests /manifests
+COPY build_files /build_files
 
-FROM ${COMMON_IMAGE_REF} AS common
-
-# ── Base system (bootc-compatible Arch) ──────────────────────────────────────
-FROM ${BASE_IMAGE} AS base-no-de
+FROM ${BASE_IMAGE} AS base
 
 ARG BASE_IMAGE
 ARG IMAGE_NAME
 ARG IMAGE_VENDOR
-ARG IMAGE_NAME_VARIANT
 ARG SHA_HEAD_SHORT
-ARG ENABLE_HWE
 ARG ENABLE_NVIDIA
-ARG ENABLE_SSHD
-ARG DESKTOP_FLAVOR
 ARG IMAGE_REGISTRY
 
 ENV BASE_IMAGE=${BASE_IMAGE}
 ENV IMAGE_NAME=${IMAGE_NAME}
 ENV IMAGE_VENDOR=${IMAGE_VENDOR}
-ENV IMAGE_NAME_VARIANT=${IMAGE_NAME_VARIANT}
 ENV IMAGE_REGISTRY=${IMAGE_REGISTRY}
-ENV ENABLE_HWE=${ENABLE_HWE}
 ENV ENABLE_NVIDIA=${ENABLE_NVIDIA}
-ENV ENABLE_SSHD=${ENABLE_SSHD}
-ENV DESKTOP_FLAVOR=${DESKTOP_FLAVOR}
 
-# Install bootc from builder stage
 COPY --from=bootc-builder /output /
 
-# Move /var to /usr/lib/sysimage for ostree/pacman compatibility
-# (pacman writes to /var/lib/pacman, /var/cache/pacman — these need to
-# survive ostree deployments via the sysimage path)
 RUN grep "= */var" /etc/pacman.conf | sed "/= *\/var/s/.*=// ; s/ //" | \
     xargs -n1 sh -c 'mkdir -p "/usr/lib/sysimage/$(dirname $(echo $1 | sed "s@/var/@@"))" && mv -v "$1" "/usr/lib/sysimage/$(echo "$1" | sed "s@/var/@@")"' '' && \
     sed -i -e "/= *\/var/ s/^#//" -e "s@= */var@= /usr/lib/sysimage@g" -e "/DownloadUser/d" /etc/pacman.conf
 
-# Full system refresh + bootc base packages
-# CachyOS images already have CachyOS repos in pacman.conf, so pacman -S
-# will pull optimized packages automatically. We detect CachyOS by checking
-# for the cachyos repo in pacman.conf and install linux-cachyos instead of
-# stock linux.
-RUN KERNEL_PKG="linux"; \
-    # Arch Linux ARM names its stock kernel linux-aarch64
-    if [ "$(uname -m)" = "aarch64" ]; then \
-        KERNEL_PKG="linux-aarch64"; \
-    fi; \
-    if grep -q "^\[cachyos\]" /etc/pacman.conf 2>/dev/null; then \
-        KERNEL_PKG="linux-cachyos"; \
-    fi && \
-    pacman -Syu --noconfirm && \
+RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm --needed \
         base \
         dracut \
-        ${KERNEL_PKG} \
-        ${KERNEL_PKG}-headers \
+        linux \
+        linux-headers \
         linux-firmware \
         ostree \
         btrfs-progs \
@@ -132,21 +101,15 @@ RUN KERNEL_PKG="linux"; \
         gst-plugins-ugly && \
     pacman -Scc --noconfirm
 
-# Build initramfs. Live-boot modules are NOT needed here: tacklebox
-# injects its own embedded tbox-live/tbox-root dracut modules at ISO
-# build time using this image's stock dracut (tuna-os/tacklebox#90).
-RUN mkdir -p /usr/lib/dracut/dracut.conf.d/ && \
-    printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
-        > /usr/lib/dracut/dracut.conf.d/30-fix-bootc-module.conf && \
-    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc "\nomit_dracutmodules+=" tpm2-tss pcsc "\n' \
-        > /usr/lib/dracut/dracut.conf.d/30-bootc-container-build.conf && \
-    dracut --force "$(find /usr/lib/modules -maxdepth 1 -type d | grep -v '\.img' | tail -1)/initramfs.img"
+# Homebrew — extracts to /var/home/linuxbrew/.linuxbrew on first boot via
+# brew-setup.service, shipped by the brew image. Same pattern bluefin uses;
+# the install itself is distro-agnostic (official Homebrew Linux tarball),
+# nothing Fedora-specific about it.
+COPY --from=brew /system_files /
+RUN systemctl enable brew-setup.service
 
-# Set up bootc/ostree filesystem layout
 RUN rm -rf /boot /home /root /usr/local /srv /opt /mnt \
         /usr/lib/sysimage/log /usr/lib/sysimage/cache/pacman/pkg && \
-    # /var may contain mount points from overlayfs layers (rpm, dnf on Fedora
-    # parents; none on Arch). Clean everything that isn't a mount.
     for d in /var/* /var/.[!.]*; do [ -d "$d" ] && ! mountpoint -q "$d" 2>/dev/null && rm -rf "$d" 2>/dev/null || true; done && \
     rm -rf /usr/lib/sysimage/log /usr/lib/sysimage/cache/pacman/pkg 2>/dev/null; true && \
     mkdir -p /sysroot /boot /usr/lib/ostree /var /var/tmp && \
@@ -162,67 +125,24 @@ RUN rm -rf /boot /home /root /usr/local /srv /opt /mnt \
     printf '[composefs]\nenabled = yes\n[sysroot]\nreadonly = true\n' \
         > /usr/lib/ostree/prepare-root.conf
 
-# systemd-firstboot asks the CONSOLE for a timezone and blocks there forever.
-#
-# Arch ships systemd-firstboot.service enabled, and a bootc image has an
-# uninitialized machine-id by design, which is exactly its trigger condition.
-# So every marlin desktop booted into
-#
-#   Starting Initial Setup...
-#   Please enter the new timezone name or number ("list" to list options...)
-#
-# and never reached graphical.target. tunaos-desktop-contract.service is
-# WantedBy=graphical.target, so it never ran and emitted nothing — the Gate
-# reported "desktop experience contract marker was not emitted" for all five
-# desktops in run 30707799065 while the image itself was complete and
-# correctly wired.
-#
-# Confirmed from the Gate's own serial.log: the last thing marlin does is
-# print the timezone prompt, and "Reached target Graphical Interface" never
-# appears. Nothing was broken about the desktop; the boot was waiting for a
-# human.
-#
-# Containerfile.opensuse already masks this for the same reason. Masking
-# rather than disabling: the unit is pulled in by sysinit.target on Arch, and
-# a disabled unit that something Wants= still starts.
 RUN systemctl mask systemd-firstboot.service
 
-# Validate
 LABEL containers.bootc 1
 COPY --from=context /files /
-COPY --from=common /system_files/shared /
-
-# remora — the desktop experience contract requires it, and this base does
-# not run 26-packages-post.sh, which is what installs remora on the dnf
-# variants. Containerfile.opensuse already hit this and calls
-# install-remora.sh directly for the same reason (see the comment there).
-# Without it every Gate on this base fails with
-#
-#   TUNAOS_DESKTOP_CONTRACT_FAIL reason=remora_contract_missing
-#
-# which reads as a broken desktop when the desktop booted fine — grouper gnome,
-# kde, xfce and gnome-zfs all died this way in run 30692866756. The binary is
-# static Go, so there is nothing distro-specific to guard.
-RUN --mount=type=bind,from=context,source=/,target=/run/context \
-    /run/context/build_scripts/install-remora.sh
 
 RUN bootc container lint
 
-# Cache-bust so build_scripts edits invalidate the desktop stages' install
-# layers (bind-mounted scripts aren't in the cache key). Inherited by children.
-ARG BUILD_SCRIPTS_HASH
-ENV BUILD_SCRIPTS_HASH=${BUILD_SCRIPTS_HASH}
-
-FROM base-no-de AS base
 RUN ln -sf /var/opt /opt 2>/dev/null || true
 
-# hyprland — same pattern as niri, wired through install-desktop.sh.
-# ENABLE_NVIDIA is already declared as an ARG/ENV on base-no-de and
-# inherited here, but actual nvidia driver install logic isn't in this
-# file — it must live inside install-desktop.sh (or a script it calls).
-# Wire that up there the same way it's presumably already branched for
-# the other desktop targets.
-FROM base-no-de AS hyprland
+FROM base AS hyprland
 RUN --mount=type=bind,from=context,source=/,target=/run/context \
-    /run/context/build_scripts/desktop/install-desktop.sh hyprland
+    /run/context/build_files/desktop.sh hyprland \
+    /run/context/build_files/build.sh 
 RUN ln -sf /var/opt /opt 2>/dev/null || true
+
+RUN mkdir -p /usr/lib/dracut/dracut.conf.d/ && \
+    printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' \
+        > /usr/lib/dracut/dracut.conf.d/30-fix-bootc-module.conf && \
+    printf 'reproducible=yes\nhostonly=no\ncompress=zstd\nadd_dracutmodules+=" bootc "\nomit_dracutmodules+=" tpm2-tss pcsc "\n' \
+        > /usr/lib/dracut/dracut.conf.d/30-bootc-container-build.conf && \
+    dracut --force "$(find /usr/lib/modules -maxdepth 1 -type d | grep -v '\.img' | tail -1)/initramfs.img"

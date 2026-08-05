@@ -2,6 +2,18 @@
 
 This repository is meant to be a template for building your own custom [bootc](https://github.com/bootc-dev/bootc) image. This template is the recommended way to make customizations to any image published by the Universal Blue Project.
 
+> [!NOTE]
+> This repo's image build was migrated from a Containerfile/BlueBuild-style
+> OCI build (`Containerfile.arch` + `build_files/`) to
+> [mkosi](https://github.com/systemd/mkosi) (`mkosi.conf` +
+> `mkosi.profiles/`), modeled on how
+> [zirconium-dev/zirconium](https://github.com/zirconium-dev/zirconium) does
+> it. The base distribution is still Arch Linux. `Containerfile.arch` is
+> kept around for now since the `build-arch.yml` workflow's variant/flavor
+> pipeline (`build-variant.yml` -> `reusable-build-image.yml`) still depends
+> on it and wasn't touched as part of this migration -- see that workflow's
+> comments / the migration PR description for details.
+
 # Community
 
 If you have questions about this template after following the instructions, try the following spaces:
@@ -22,6 +34,7 @@ These steps assume you have the following:
 - A Github Account
 - A machine running a bootc image (e.g. Bazzite, Bluefin, Aurora, or Fedora Atomic)
 - Experience installing and using CLI programs
+- [mkosi](https://github.com/systemd/mkosi) and [just](https://just.systems/) installed locally if you want to build the image yourself
 
 ## Step 1: Preparing the Template
 
@@ -79,26 +92,9 @@ gh secret set SIGNING_SECRET < cosign.key
 
 ### Step 2b: Choosing Your Base Image
 
-To choose a base image, simply modify the line in the container file starting with `FROM`. This will be the image your image derives from, and is your starting point for modifications.
-For a base image, you can choose any of the Universal Blue images or start from a Fedora Atomic system. Below this paragraph is a dropdown with a non-exhaustive list of potential base images.
+The base distribution is set in `mkosi.conf` under `[Distribution] Distribution=`. This repo builds on Arch Linux (`Distribution=arch`); package selection and build-time customization live in `mkosi.profiles/*/mkosi.conf` and the `mkosi.prepare.chroot`/`mkosi.postinst.chroot` scripts under each profile directory (see the "Repository Contents" section below).
 
-<details>
-    <summary>Base Images</summary>
-
-- Bazzite: `ghcr.io/ublue-os/bazzite:stable`
-- Aurora: `ghcr.io/ublue-os/aurora:stable`
-- Bluefin: `ghcr.io/ublue-os/bluefin:stable`
-- Universal Blue Base: `ghcr.io/ublue-os/base-main:latest`
-- Fedora: `quay.io/fedora/fedora-bootc:44`
-
-You can find more Universal Blue images on the [packages page](https://github.com/orgs/ublue-os/packages).
-</details>
-
-If you don't know which image to pick, choosing the one your system is currently on is the best bet for a smooth transition. To find out what image your system currently uses, run the following command:
-```bash
-sudo bootc status
-```
-This will show you all the info you need to know about your current image. The image you are currently on is displayed after `Booted image:`. Paste that information after the `FROM` statement in the Containerfile to set it as your base image.
+If you want to switch base distributions entirely, mkosi supports several (`fedora`, `debian`, `ubuntu`, `opensuse`, etc. -- see [zirconium](https://github.com/zirconium-dev/zirconium) for a Fedora-based example of this same layout), but that's a bigger change than this migration covers.
 
 ### Step 2c: Changing Names
 
@@ -106,7 +102,7 @@ Change the `IMAGE_NAME` and `REPO_ORGANIZATION` variable inside the `image-templ
 
 To commit and push all the files changed and added in step 2 into your Github repository:
 ```bash
-git add Containerfile image-template.env cosign.pub
+git add mkosi.conf image-template.env cosign.pub
 git commit -m "Initial Setup"
 git push
 ```
@@ -122,21 +118,30 @@ This should queue your image for the next reboot, which you can do immediately a
 
 # Repository Contents
 
-## Containerfile
+## mkosi.conf / mkosi.profiles
 
-The [Containerfile](./Containerfile) defines the operations used to customize the selected image.This file is the entrypoint for your image build, and works exactly like a regular podman Containerfile. For reference, please see the [Podman Documentation](https://docs.podman.io/en/latest/Introduction.html).
+[`mkosi.conf`](./mkosi.conf) is the top-level mkosi configuration: it sets the base distribution (`Distribution=arch`), output format, and shared build settings. It's intentionally minimal -- almost everything else lives in [`mkosi.profiles/`](./mkosi.profiles), one directory per profile:
 
-## build.sh
+- `base/` -- core packages every build needs (kernel, ostree, systemd, networking, etc.)
+- `hyprland/` -- the Hyprland desktop flavor's packages and postinst setup
+- `nvidia/` -- optional NVIDIA driver stack, opt-in via the `nvidia` profile
+- `brew/` -- fetches and installs the ublue-os Homebrew tarball
+- `bootc/` -- builds `bootc`/`bootupd` from source (Arch doesn't package them yet) and wires up the dracut `bootc` module
+- `cachy/` -- **experimental/unverified**, opt-in CachyOS kernel profile
 
-The [build.sh](./build_files/build.sh) file is called from your Containerfile. It is the best place to install new packages or make any other customization to your system. There are customization examples contained within it for your perusal.
+Profiles are combined at build time (see `just build` in the Justfile below). Each profile directory can contain its own `mkosi.conf` (for `Packages=` and other settings), `mkosi.prepare.chroot` (runs after packages install, **with** network access -- for fetching/building things from source), and `mkosi.postinst.chroot` (runs after that, **without** network access -- for installing what prepare fetched/built and doing final setup). The top-level [`mkosi.finalize.chroot`](./mkosi.finalize.chroot) always runs and sets up the ostree/bootc directory layout (pacman state relocation, `/var` symlinks, etc.) regardless of which profiles are selected.
+
+[`mkosi.extra/`](./mkosi.extra) mirrors what `system_files/` used to do: anything under it gets copied verbatim into the image at `/`.
 
 ## build.yml
 
-The [build.yml](./.github/workflows/build.yml) Github Actions workflow creates your custom OCI image and publishes it to the Github Container Registry (GHCR). By default, the image name will match the Github repository name.
+The [build.yml](./.github/workflows/build.yml) Github Actions workflow builds the image with mkosi, loads it into podman, rechunks it, and publishes it to the Github Container Registry (GHCR). By default, the image name will match the Github repository name.
 
 # Building Disk Images
 
 This template provides an out of the box workflow for creating disk images (ISO, qcow, raw) for your custom OCI image which can be used to directly install onto your machines.
+
+This part of the pipeline is unchanged by the mkosi migration: it still consumes the already-built, already-tagged local image via [bootc-image-builder](https://osbuild.org/docs/bootc/) (`bib`), same as before -- run `just build && just load` first, then the `build-qcow2`/`build-iso` recipes below.
 
 This template provides a way to upload the disk images that is generated from the workflow to a S3 bucket. The disk images will also be available as an artifact from the job, if you wish to use an alternate provider. To upload to S3 we use [rclone](https://rclone.org/) which is able to use [many S3 providers](https://rclone.org/s3/).
 
@@ -168,16 +173,15 @@ This template comes with the necessary tooling to index your image on [artifacth
 
 # Justfile Documentation
 
-The `Justfile` contains various commands and configurations for building and managing container images and virtual machine images using Podman and other utilities. It is also used inside Github Actions.
+The `Justfile` contains various commands and configurations for building and managing container images and virtual machine images using mkosi, Podman, and other utilities. It is also used inside Github Actions.
 
 ## Required Utilities
 
 Container build:
 - [just](https://just.systems/man/en/introduction.html)
+- [mkosi](https://github.com/systemd/mkosi)
 - [podman](https://docs.podman.io/en/latest)
 - [jq])(https://jqlang.org)
-
-These are usually preinstalled on Universal Blue's Bootc Images.
 
 Linting:
 - shfmt
@@ -191,35 +195,40 @@ These are all sourced from the `image-template.env` file.
 - `default_tag`: The default tag for the image (default: "latest").
 - `bib_image`: The Bootc Image Builder (BIB) image (default: "quay.io/centos-bootc/bootc-image-builder:latest").
 
-## Building The Image
+Additionally, `ENABLE_NVIDIA=1` and `ENABLE_CACHYOS=1` (experimental) can be set in the environment to opt the `just build` recipe into the corresponding mkosi profiles.
 
-All these recipes will work (with default values) without supplying any arguments to them, e.g. `just build`
+## Building The Image
 
 ### `just build`
 
-Builds a container image using Podman.
+Builds the OCI image with mkosi, using the `base,hyprland,bootc,brew` profiles (plus `nvidia`/`cachy` if enabled via the environment variables above).
 
 ```bash
-just build $target_image $tag
+just build
 ```
 
-Arguments:
-- `$target_image`: The tag you want to apply to the image (default: `$image_name`).
-- `$tag`: The tag for the image (default: `$default_tag`).
+### `just load`
+
+Loads the most recently built mkosi output into local podman storage, tagged `$target_image:$tag`. Run this after `just build`.
+
+```bash
+just load $target_image $tag
+```
+
+### `just lint-image`
+
+Runs `bootc container lint` against the loaded image.
+
+```bash
+just lint-image $target_image $tag
+```
 
 ### Rechunking
 We can flatten the layers of container images to make sure there isn't a single huge layer when your image gets published.
 This does not make your image faster to download, just provides better resumability.
 
-#### `just ostree-rechunk`
-Rechunks the existing Image with [rpm-ostree](https://coreos.github.io/rpm-ostree/build-chunked-oci/)
-
-```bash
-just ostree-rechunk $target_image $tag
-```
-
 #### `just rechunk`
-Rechunks the existing Image with [chunkah](https://github.com/coreos/chunkah), this is probably gonna be the default here at some point, try it out, it's cool.
+Rechunks the loaded image with [chunkah](https://github.com/coreos/chunkah). This step is unchanged by the mkosi migration -- chunkah works on any OCI image regardless of how it was built.
 
 ```bash
 just rechunk $target_image $tag
@@ -227,9 +236,7 @@ just rechunk $target_image $tag
 
 ### Switching to the locally built image for testing
 
-The image has to be in the containers-storage owned by root, to be able to rebase to it, see the `_rootful_load_image` recipe.
-
-`sudo just build` and `sudo just ostree-rechunk` builds directly as root and allows you to skip the transfer to the root containers-storage.
+The image has to be in the containers-storage owned by root, to be able to rebase to it.
 
 You can rebase to all the images that are in your containers-storage:
 
@@ -247,7 +254,7 @@ and reboot your system!
 
 ## Building and Running Virtual Machines and ISOs
 
-The below commands all build QCOW2 images. To produce or use a different type of image, substitute in the command with that type in the place of `qcow2`. The available types are `qcow2`, `iso`, and `raw`.
+The below commands all build QCOW2 images. To produce or use a different type of image, substitute in the command with that type in the place of `qcow2`. The available types are `qcow2`, `iso`, and `raw`. These still go through `just build && just load` first, then bootc-image-builder, same as before the mkosi migration.
 
 ### `just build-qcow2`
 
@@ -293,7 +300,7 @@ Fixes the syntax of all `.just` files and the `Justfile`.
 
 ### `just clean`
 
-Cleans the repository by removing build artifacts.
+Cleans the repository by removing build artifacts (including `mkosi clean`).
 
 ### `just lint`
 
@@ -316,3 +323,4 @@ These are images derived from this template (or similar enough to this template)
 - [Homer](https://github.com/bketelsen/homer/)
 - [Amy OS](https://github.com/astrovm/amyos)
 - [VeneOS](https://github.com/Venefilyn/veneos)
+- [Zirconium](https://github.com/zirconium-dev/zirconium) -- the mkosi layout this migration was modeled on (Fedora-based, not Arch)
