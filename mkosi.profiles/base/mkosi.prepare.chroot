@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Enables universe + multiverse before packages are resolved, and installs
+# the kernel. Translated from Containerfile.ubuntu's "Enable universe +
+# multiverse" step and build_scripts/ubuntu-kernel.sh's default (non-Asahi)
+# path.
+#
+# NOTE: mkosi.conf already sets Repositories=main,restricted,universe,
+# multiverse under [Distribution], which should make this apt-sources sed
+# redundant for a stock mkosi Ubuntu bootstrap -- kept here as a defensive
+# fallback in case the mkosi-generated sources file doesn't end up matching
+# what this script checks for. Worth removing once verified unnecessary
+# against an actual build.
+set -xeuo pipefail
+
+if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+    sed -i 's/^Components: .*/Components: main restricted universe multiverse/' \
+        /etc/apt/sources.list.d/ubuntu.sources
+fi
+if [ -f /etc/apt/sources.list ]; then
+    sed -i 's/ main$/ main restricted universe multiverse/' /etc/apt/sources.list
+fi
+apt-get update -y
+
+# Kernel + firmware. Ubuntu stages vmlinuz where bootc expects it under
+# /usr/lib/modules/<kver>/ -- apt alone doesn't do this, dpkg puts it in
+# /boot, hence the explicit cp.
+apt-get install -y --no-install-recommends linux-generic linux-firmware
+KVER=$(find /usr/lib/modules -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1 | xargs basename)
+cp "/boot/vmlinuz-${KVER}" "/usr/lib/modules/${KVER}/vmlinuz"

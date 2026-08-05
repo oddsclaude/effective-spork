@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Stubs the kernel/grub postinst hooks so package installs that pull a
+# kernel don't try to build an initramfs or grub config -- the initramfs is
+# built explicitly with dracut in mkosi.finalize.chroot's build (via the
+# gnome/bootc profiles' postinst) instead. Translated verbatim from
+# Containerfile.ubuntu's stub step; this part is genuinely distro-specific
+# (Ubuntu's kernel packaging triggers these hooks on install, Arch's does
+# not), not a leftover.
+set -xeuo pipefail
+
+printf '#!/bin/sh\nexit 0\n' | tee \
+    /usr/sbin/update-initramfs /usr/sbin/mkinitramfs \
+    /usr/sbin/update-grub /usr/sbin/grub-mkconfig > /dev/null
+chmod +x /usr/sbin/update-initramfs /usr/sbin/mkinitramfs \
+    /usr/sbin/update-grub /usr/sbin/grub-mkconfig
+
+mkdir -p /etc/kernel/postinst.d
+printf '#!/bin/sh\nexit 0\n' > /etc/kernel/postinst.d/kdump-tools
+chmod +x /etc/kernel/postinst.d/kdump-tools
+
+# pcsc (smart card daemon) dracut module is part of Ubuntu's default module
+# set but the pcscd package isn't needed for the initramfs.
+echo 'omit_dracutmodules+=" pcsc "' > /etc/dracut.conf.d/omit-pcsc.conf
+
+# Build the initramfs for whatever kernel is currently staged. The bootc/
+# gnome profiles don't need to repeat this since it only needs to happen
+# once per build, after all packages (which may include kernel modules) are
+# installed.
+KVER_DIR="$(find /usr/lib/modules -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)"
+KVER="$(basename "${KVER_DIR}")"
+dracut --force --zstd --reproducible --no-hostonly "${KVER_DIR}/initramfs.img" "${KVER}"
