@@ -257,7 +257,7 @@ _build-bib $target_image $tag $type $config: (_rootful_load_image target_image t
     sudo chown -R $USER:$USER output/
 
 # Example: just _rebuild-bib localhost/fedora latest qcow2 disk_config/disk.toml
-_rebuild-bib $target_image $tag $type $config: (build) (load target_image tag) && (_build-bib target_image tag type config)
+_rebuild-bib $target_image $tag $type $config: build (load target_image tag) && (_build-bib target_image tag type config)
 
 # Build a QCOW2 virtual machine image. Note: this still uses
 # bootc-image-builder against the locally loaded image, same as before the
