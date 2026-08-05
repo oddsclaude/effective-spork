@@ -83,8 +83,13 @@ pacman -Syu --noconfirm ghostty \
   unicode-emoji \
   wqy-microhei \
   bazaar \
+  sddm \  
+  openssh \  
+  sudo \  
   mission-control
 
+systemctl enable sddm 
+systemctl enable sshd
 systemctl --user enable pipewire
 systemctl --user enable pipewire-pulse
 systemctl --user enable wireplumber
