@@ -139,7 +139,7 @@ build $target_image=image_name $tag=default_tag:
     podman build "${PODMAN_BUILD_ARGS[@]}" .
 
 # Split the image for smaller updates
-    rechunk $target_image=image_name $tag=default_tag:
+rechunk $target_image=image_name $tag=default_tag:
     #!/usr/bin/env bash
 
     set -xeuo pipefail
