@@ -5,17 +5,25 @@ This repository is meant to be a template for building your own custom [bootc](h
 > [!NOTE]
 > This repo's image build was migrated from a Containerfile/BlueBuild-style
 > OCI build to [mkosi](https://github.com/systemd/mkosi) (`mkosi.conf` +
-> `mkosi.profiles/`), modeled on how
-> [zirconium-dev/zirconium](https://github.com/zirconium-dev/zirconium) does
-> it. The base distribution is still Arch Linux. `Containerfile.arch`,
-> `build_files/`, and `system_files/` have been removed -- fully superseded
-> by `mkosi.conf`/`mkosi.profiles/`/`mkosi.extra/`. The old
-> `build-arch.yml` -> `build-variant.yml` -> `reusable-build-image.yml`
-> workflow chain was also removed rather than migrated: it turned out to
-> already be non-functional independent of this migration (it referenced
+> `mkosi.profiles/`). `Containerfile.arch`, `build_files/`, and
+> `system_files/` have been removed -- fully superseded by
+> `mkosi.conf`/`mkosi.profiles/`/`mkosi.extra/`. The old `build-arch.yml`
+> -> `build-variant.yml` -> `reusable-build-image.yml` workflow chain was
+> also removed rather than migrated: it turned out to already be
+> non-functional independent of this migration (it referenced
 > `.github/build-config.yml` and a `reusable-build-artifacts.yml`, neither
 > of which exist in this repo, and used variant names that don't match
-> anything here) -- see the migration PR description for details.
+> anything here).
+>
+> **The base distribution and desktop have also changed since the first
+> draft of this migration: Arch + Hyprland -> Ubuntu 26.04 "resolute" +
+> GNOME**, modeled on how [tuna-os/tunaOS](https://github.com/tuna-os/tunaOS)
+> builds its Ubuntu variant ("grouper"). Every profile that touched
+> pacman-specific mechanics (package relocation, bootc packaging, the
+> desktop profile) was re-derived against tunaOS's actual apt/dpkg
+> approach, not find-replaced. See the migration PR description for what
+> changed and what's still flagged as unverified (nvidia in particular --
+> tunaOS itself has no working Ubuntu+nvidia path to model this on).
 
 # Community
 
@@ -37,7 +45,7 @@ These steps assume you have the following:
 - A Github Account
 - A machine running a bootc image (e.g. Bazzite, Bluefin, Aurora, or Fedora Atomic)
 - Experience installing and using CLI programs
-- [mkosi](https://github.com/systemd/mkosi) and [just](https://just.systems/) installed locally if you want to build the image yourself
+- [mkosi](https://github.com/systemd/mkosi) and [just](https://just.systems/) installed locally if you want to build the image yourself (mkosi needs a working `debootstrap`/apt toolchain available for the Ubuntu bootstrap, in addition to whatever mkosi's own ToolsTree pulls in)
 
 ## Step 1: Preparing the Template
 
@@ -95,9 +103,9 @@ gh secret set SIGNING_SECRET < cosign.key
 
 ### Step 2b: Choosing Your Base Image
 
-The base distribution is set in `mkosi.conf` under `[Distribution] Distribution=`. This repo builds on Arch Linux (`Distribution=arch`); package selection and build-time customization live in `mkosi.profiles/*/mkosi.conf` and the `mkosi.prepare.chroot`/`mkosi.postinst.chroot` scripts under each profile directory (see the "Repository Contents" section below).
+The base distribution is set in `mkosi.conf` under `[Distribution] Distribution=`/`Release=`. This repo builds on Ubuntu 26.04 "resolute" (`Distribution=ubuntu`, `Release=resolute`); package selection and build-time customization live in `mkosi.profiles/*/mkosi.conf` and the `mkosi.prepare.chroot`/`mkosi.postinst.chroot` scripts under each profile directory (see the "Repository Contents" section below).
 
-If you want to switch base distributions entirely, mkosi supports several (`fedora`, `debian`, `ubuntu`, `opensuse`, etc. -- see [zirconium](https://github.com/zirconium-dev/zirconium) for a Fedora-based example of this same layout), but that's a bigger change than this migration covers.
+If you want to switch base distributions entirely, mkosi supports several (`fedora`, `debian`, `arch`, `opensuse`, etc.), but that's a bigger change -- see [zirconium](https://github.com/zirconium-dev/zirconium) (Fedora) and [tuna-os/tunaOS](https://github.com/tuna-os/tunaOS) (multi-distro, including the Ubuntu approach this repo's `bootc`/`base`/`gnome` profiles are modeled on) for reference layouts on other distros.
 
 ### Step 2c: Changing Names
 
@@ -123,16 +131,15 @@ This should queue your image for the next reboot, which you can do immediately a
 
 ## mkosi.conf / mkosi.profiles
 
-[`mkosi.conf`](./mkosi.conf) is the top-level mkosi configuration: it sets the base distribution (`Distribution=arch`), output format, and shared build settings. It's intentionally minimal -- almost everything else lives in [`mkosi.profiles/`](./mkosi.profiles), one directory per profile:
+[`mkosi.conf`](./mkosi.conf) is the top-level mkosi configuration: it sets the base distribution (`Distribution=ubuntu`, `Release=resolute`), output format, and shared build settings. It's intentionally minimal -- almost everything else lives in [`mkosi.profiles/`](./mkosi.profiles), one directory per profile:
 
-- `base/` -- core packages every build needs (kernel, ostree, systemd, networking, etc.)
-- `hyprland/` -- the Hyprland desktop flavor's packages and postinst setup
-- `nvidia/` -- optional NVIDIA driver stack, opt-in via the `nvidia` profile
-- `brew/` -- fetches and installs the ublue-os Homebrew tarball
-- `bootc/` -- builds `bootc`/`bootupd` from source (Arch doesn't package them yet) and wires up the dracut `bootc` module
-- `cachy/` -- **experimental/unverified**, opt-in CachyOS kernel profile
+- `base/` -- core packages every build needs (kernel, ostree, systemd, networking, tpm2 userspace, etc.) plus the apt sources/kernel prep and kernel/grub postinst-hook stubs
+- `gnome/` -- the GNOME desktop flavor's packages and postinst setup (replaces the original Arch draft's Hyprland profile -- see the note at the top of this README)
+- `nvidia/` -- optional NVIDIA driver stack, opt-in via the `nvidia` profile. **Unverified** -- see the profile's own comments
+- `brew/` -- fetches and installs the ublue-os Homebrew tarball (distro-agnostic, unchanged since the first draft)
+- `bootc/` -- installs `bootc` from the bootc-shindig/bootc-deb apt repo (Ubuntu doesn't package it, but unlike Arch there's a prebuilt .deb, so no from-source build is needed)
 
-Profiles are combined at build time (see `just build` in the Justfile below). Each profile directory can contain its own `mkosi.conf` (for `Packages=` and other settings), `mkosi.prepare.chroot` (runs after packages install, **with** network access -- for fetching/building things from source), and `mkosi.postinst.chroot` (runs after that, **without** network access -- for installing what prepare fetched/built and doing final setup). The top-level [`mkosi.finalize.chroot`](./mkosi.finalize.chroot) always runs and sets up the ostree/bootc directory layout (pacman state relocation, `/var` symlinks, etc.) regardless of which profiles are selected.
+Profiles are combined at build time (see `just build` in the Justfile below). Each profile directory can contain its own `mkosi.conf` (for `Packages=` and other settings), `mkosi.prepare.chroot` (runs after packages install, **with** network access -- for fetching/building things from source), and `mkosi.postinst.chroot` (runs after that, **without** network access -- for installing what prepare fetched/built and doing final setup). The top-level [`mkosi.finalize.chroot`](./mkosi.finalize.chroot) always runs and sets up the ostree/bootc directory layout (dpkg state relocation, `/home`/`/opt`/`/root`/`/srv`/`/mnt` bind-mount units, etc.) regardless of which profiles are selected.
 
 [`mkosi.extra/`](./mkosi.extra) replaces the old `system_files/`: anything under it gets copied verbatim into the image at `/`.
 
@@ -198,13 +205,13 @@ These are all sourced from the `image-template.env` file.
 - `default_tag`: The default tag for the image (default: "latest").
 - `bib_image`: The Bootc Image Builder (BIB) image (default: "quay.io/centos-bootc/bootc-image-builder:latest").
 
-Additionally, `ENABLE_NVIDIA=1` and `ENABLE_CACHYOS=1` (experimental) can be set in the environment to opt the `just build` recipe into the corresponding mkosi profiles.
+Additionally, `ENABLE_NVIDIA=1` can be set in the environment to opt the `just build` recipe into the nvidia profile (unverified, see `mkosi.profiles/nvidia/`).
 
 ## Building The Image
 
 ### `just build`
 
-Builds the OCI image with mkosi, using the `base,hyprland,bootc,brew` profiles (plus `nvidia`/`cachy` if enabled via the environment variables above).
+Builds the OCI image with mkosi, using the `base,gnome,bootc,brew` profiles (plus `nvidia` if enabled via the environment variable above).
 
 ```bash
 just build
@@ -326,4 +333,5 @@ These are images derived from this template (or similar enough to this template)
 - [Homer](https://github.com/bketelsen/homer/)
 - [Amy OS](https://github.com/astrovm/amyos)
 - [VeneOS](https://github.com/Venefilyn/veneos)
-- [Zirconium](https://github.com/zirconium-dev/zirconium) -- the mkosi layout this migration was modeled on (Fedora-based, not Arch)
+- [Zirconium](https://github.com/zirconium-dev/zirconium) -- the mkosi profile layout this migration was originally modeled on (Fedora-based)
+- [tuna-os/tunaOS](https://github.com/tuna-os/tunaOS) -- reference for the Ubuntu/apt-specific bootc and GNOME packaging this repo's `base`/`gnome`/`bootc` profiles are derived from

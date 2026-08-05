@@ -78,18 +78,18 @@ sudoif command *args:
 # mkosi.profiles/). It replaces the old `podman build -f Containerfile.arch`
 # recipe.
 #
-# Profiles used: base,hyprland,bootc,brew by default. Set ENABLE_NVIDIA=1 to
-# add the nvidia profile, or ENABLE_CACHYOS=1 (untested, see
-# mkosi.profiles/cachy/) to add the cachy profile.
+# Profiles used: base,gnome,bootc,brew by default (Ubuntu + GNOME). Set
+# ENABLE_NVIDIA=1 to add the nvidia profile (see mkosi.profiles/nvidia/ --
+# unverified, flagged in the PR). There is no CachyOS profile anymore:
+# CachyOS is an Arch-only kernel distro with no Ubuntu equivalent.
 #
 # just build
 build:
     #!/usr/bin/env bash
     set -euxo pipefail
 
-    PROFILES="base,hyprland,bootc,brew"
+    PROFILES="base,gnome,bootc,brew"
     [[ "${ENABLE_NVIDIA:-0}" == "1" ]] && PROFILES="${PROFILES},nvidia"
-    [[ "${ENABLE_CACHYOS:-0}" == "1" ]] && PROFILES="${PROFILES},cachy"
 
     mkosi -B --debug --profile="${PROFILES}"
 
@@ -108,7 +108,7 @@ lint-image $target_image=image_name $tag=default_tag:
 
 # Split the image for smaller updates. Unchanged from before -- chunkah
 # works on any OCI image regardless of how it was built, so this doesn't
-# need to change for the mkosi migration.
+# need to change for the Ubuntu migration either.
 rechunk $target_image=image_name $tag=default_tag:
     #!/usr/bin/env bash
 
