@@ -1,0 +1,43 @@
+#!/bin/bash
+# Recreates the ostree/bootc directory layout for an apt/dpkg-based system,
+# translated from tuna-os/tunaOS's build_scripts/bootc/mount-system.sh (the
+# script that "bootcifies" their Ubuntu rootfs). This always runs, regardless
+# of which mkosi.profiles/* are selected.
+#
+# This is a deliberately different mechanism from what the Arch/pacman
+# version of this file did, not a find-replace:
+#   * dpkg's database (/var/lib/dpkg) is relocated to /usr/lib/sysimage and
+#     symlinked back via a tmpfiles L+ rule (mkosi.extra/usr/lib/tmpfiles.d/
+#     dpkg-sysimage.conf), same idea as pacman's relocation but dpkg-shaped.
+#   * /home, /opt, /root, /srv, /mnt become systemd bind-mount units (see
+#     mkosi.extra/usr/lib/systemd/system/*.mount) that map to /var/<dir> at
+#     boot, NOT plain symlinks like the Arch version used. This is what
+#     tunaOS's mount-system.sh actually does -- ostree/rpm-based bootc images
+#     tend to use symlinks, but tunaOS's Ubuntu path uses bind mounts, so
+#     that's what's mirrored here.
+#   * composefs sysroot config (mkosi.extra/usr/lib/ostree/prepare-root.conf)
+#     and the base-directory tmpfiles rules (mkosi.extra/usr/lib/tmpfiles.d/
+#     bootc-base-directories.conf) are shipped as static files rather than
+#     written here, matching how tunaOS ships them (as an overlay directory)
+#     rather than generating them in a script.
+set -xeuo pipefail
+
+# Preserve the dpkg database across the /var wipe below -- without this the
+# shipped image can't answer `dpkg-query -W` (tuna-os/tunaos-packages#135).
+mkdir -p /usr/lib/sysimage
+if [ -d /var/lib/dpkg ]; then
+    rm -rf /usr/lib/sysimage/dpkg
+    cp -a /var/lib/dpkg /usr/lib/sysimage/dpkg
+fi
+
+rm -rf /boot /home /root /srv /var /media
+
+mkdir -p /var/lib
+ln -sT ../../usr/lib/sysimage/dpkg /var/lib/dpkg
+
+mkdir -p /sysroot /boot /usr/lib/ostree /var /var/tmp /home /root /srv /opt /mnt
+
+ln -sf sysroot/ostree /ostree
+ln -sf run/media /media
+
+systemctl enable home.mount mnt.mount opt.mount root.mount srv.mount

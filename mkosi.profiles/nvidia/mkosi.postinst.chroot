@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# UNVERIFIED, same caveat as mkosi.conf in this profile -- there is no
+# tunaOS Ubuntu nvidia path to translate this from, this is written from
+# general knowledge of how Ubuntu's nvidia-driver packages behave (they
+# install their own dkms/modprobe/initramfs hooks via debconf, unlike
+# Arch's nvidia-open-dkms which needed manual dracut config) and has not
+# been build-tested.
+set -xeuo pipefail
+
+KVER_DIR="$(find /usr/lib/modules -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)"
+KVER="$(basename "${KVER_DIR}")"
+dracut --force --zstd --reproducible --no-hostonly "${KVER_DIR}/initramfs.img" "${KVER}"

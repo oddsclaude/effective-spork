@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Installs bootc from the bootc-shindig/bootc-deb apt repo, exactly as
+# tuna-os/tunaOS's build_scripts/bootc/install-bootc.sh does (bootc is not in
+# the Ubuntu archive -- 0 entries across all series, per tunaOS's own
+# comment). Runs in mkosi.prepare.chroot for network access (adding an apt
+# repo + apt-get update/install needs it); apt resolves bootc's
+# dracut/ostree/libostree-dev dependencies automatically, no separate
+# from-source build needed the way Arch required.
+set -xeuo pipefail
+
+curl -fsSL https://raw.githubusercontent.com/bootc-shindig/bootc-deb/refs/heads/main/bootc-deb.asc |
+    gpg --dearmor -o /usr/share/keyrings/bootc-deb.gpg
+
+echo "deb [signed-by=/usr/share/keyrings/bootc-deb.gpg] https://bootc-shindig.github.io/bootc-deb/debian stable main" \
+    > /etc/apt/sources.list.d/bootc-deb.list
+
+apt-get update -y
+apt-get install -y bootc

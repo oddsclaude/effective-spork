@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Sanity-checks the installed bootc binary and runs the lint tunaOS's
+# finalize.sh runs post-bootcify. The actual initramfs build and
+# dpkg/ostree directory layout work happens in mkosi.profiles/base's
+# postinst and the top-level mkosi.finalize.chroot respectively, since
+# those need to happen exactly once regardless of which profiles are
+# combined, not duplicated here.
+set -xeuo pipefail
+
+stat /usr/bin/bootc
+
+# Non-fatal by default, matching tunaOS's finalize.sh (HOME=/tmp because
+# /root is a bind-mount target that doesn't exist yet at build time -- see
+# mkosi.finalize.chroot). Set BOOTC_LINT_FATAL=1 in the build environment to
+# make lint failures fail the build instead of just warning.
+if ! HOME=/tmp bootc container lint; then
+    if [[ "${BOOTC_LINT_FATAL:-0}" == "1" ]]; then
+        exit 1
+    fi
+    echo "WARNING: bootc container lint reported findings (non-fatal, set BOOTC_LINT_FATAL=1 to enforce)"
+fi

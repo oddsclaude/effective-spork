@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Enables gdm and rebuilds the extension schema cache, mirroring
+# tuna-os/tunaOS's build_scripts/desktop/gnome.sh + the gnome case of
+# build_scripts/desktop/configure-desktop-runtime.sh (dm=gdm for gnome).
+# The old hyprland profile enabled greetd -- GNOME uses gdm, not greetd, so
+# this is a real behavioral difference, not just a renamed service.
+set -xeuo pipefail
+
+if command -v glib-compile-schemas &>/dev/null; then
+    glib-compile-schemas /usr/share/glib-2.0/schemas
+fi
+
+systemctl enable gdm.service
+systemctl set-default graphical.target
