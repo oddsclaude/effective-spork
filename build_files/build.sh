@@ -19,6 +19,14 @@ pacman -Syu --noconfirm ghostty \
   bluetui \
   bluetui \
   steam \
+  nvidia-open-dkms \
+  nvidia-utils \
+  nvidia-settings \
+  lib32-nvidia-utils \
+  egl-wayland \
+  vulkan-icd-loader \
+  lib32-vulkan-icd-loader
+  linux-headers \
   base-devel \
   alacritty \
   firefox \
