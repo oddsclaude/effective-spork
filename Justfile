@@ -109,7 +109,7 @@ lint-image $target_image=image_name $tag=default_tag:
 # Split the image for smaller updates. Unchanged from before -- chunkah
 # works on any OCI image regardless of how it was built, so this doesn't
 # need to change for the Ubuntu migration either.
-rechunk $target_image=image_name $tag=default_tag: && load target_image tag:
+rechunk $target_image=image_name $tag=default_tag: 
     #!/usr/bin/env bash
 
     set -xeuo pipefail
