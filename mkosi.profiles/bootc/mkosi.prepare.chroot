@@ -1,26 +1,52 @@
 #!/usr/bin/env bash
-# Installs bootc from the bootc-shindig/bootc-deb apt repo, exactly as
-# tuna-os/tunaOS's build_scripts/bootc/install-bootc.sh does (bootc is not in
-# the Ubuntu archive -- 0 entries across all series, per tunaOS's own
-# comment). Runs in mkosi.prepare.chroot for network access (adding an apt
-# repo + apt-get update/install needs it).
+# Builds bootc from source, per bootcrew/mono's ubuntu/Containerfile +
+# shared/build.sh pattern:
+#   https://github.com/bootcrew/mono/blob/main/ubuntu/Containerfile
+# which the maintainer asked to model this repo's Ubuntu bootc setup on.
 #
-# NOTE: this only works because it adds its OWN apt source
-# (bootc-deb.list) rather than depending on Ubuntu's own apt sources being
-# present -- they aren't, by the time any mkosi.prepare.chroot "final"
-# script runs (see mkosi.profiles/base/mkosi.conf's comment for the full
-# explanation, discovered via a real CI failure on the base profile's old
-# prepare.chroot). That means bootc's Depends (dracut, ostree,
-# libostree-dev) can only resolve from packages already installed via
-# [Content] Packages=, not from Ubuntu's archive at this point -- all three
-# are listed in mkosi.profiles/base/mkosi.conf for exactly this reason.
+# This REPLACES installing a prebuilt bootc .deb from the
+# bootc-shindig/bootc-deb apt repo: that repo was renamed to
+# atomic-shindig/shindig-deb and the old bootc-shindig.github.io GitHub
+# Pages URL is dead (confirmed via the GitHub API -- the numeric repo ID
+# behind the old name redirects to the new full_name, and the new Pages URL
+# serves a real Release file while the old one 404s). Building from source
+# instead means this profile doesn't depend on any third-party apt-hosting
+# infrastructure staying alive at all.
+#
+# Runs in mkosi.prepare.chroot's "final" phase (the only invocation that
+# happens here, since this repo doesn't use BuildPackages=) specifically
+# for its network access -- git clone + rustup + cargo/make all need it.
+# Nothing here calls apt-get: per mkosi.profiles/base/mkosi.conf's comment,
+# Ubuntu's own apt sources are NOT present in the chroot by this phase, only
+# network access is available. Build tooling (git, make, build-essential,
+# go-md2man, libzstd-dev, pkgconf) is installed via this profile's own
+# mkosi.conf [Content] Packages= instead, through mkosi's own package
+# machinery, which is what actually has working sources.
+#
+# Everything below is staged under $SRCDIR/cache -- mkosi's build-cache
+# directory, not the final image. That's what keeps the ~1GB Rust toolchain
+# and the bootc git checkout out of the shipped image, without needing
+# bootcrew's buildah `--mount=type=tmpfs` trick (no mkosi equivalent).
+# mkosi.postinst.chroot copies in only the built binaries from here.
 set -xeuo pipefail
 
-curl -fsSL https://raw.githubusercontent.com/bootc-shindig/bootc-deb/refs/heads/main/bootc-deb.asc |
-    gpg --dearmor -o /usr/share/keyrings/bootc-deb.gpg
+mkdir -p "${SRCDIR}/cache"
 
-echo "deb [signed-by=/usr/share/keyrings/bootc-deb.gpg] https://bootc-shindig.github.io/bootc-deb/debian stable main" \
-    > /etc/apt/sources.list.d/bootc-deb.list
+# bootc needs a newer Rust than Ubuntu packages; rustup matches bootcrew's
+# own approach (they curl rustup.rs the same way). Installed into
+# $SRCDIR/cache so it's cached across builds and never touches the image.
+export CARGO_HOME="${SRCDIR}/cache/rust"
+export RUSTUP_HOME="${SRCDIR}/cache/rust"
+if [ ! -x "${CARGO_HOME}/bin/cargo" ]; then
+    curl --proto '=https' --tlsv1.2 -sSf "https://sh.rustup.rs" \
+        | sh -s -- --profile minimal -y --no-modify-path
+fi
+# shellcheck disable=SC1091 # only exists after rustup installs it above
+. "${CARGO_HOME}/env"
 
-apt-get update -y
-apt-get install -y bootc
+if [ ! -d "${SRCDIR}/cache/bootc" ]; then
+    git clone https://github.com/bootc-dev/bootc.git "${SRCDIR}/cache/bootc"
+fi
+if [ ! -d "${SRCDIR}/cache/bootc-output" ]; then
+    ( cd "${SRCDIR}/cache/bootc" && make bin install-all DESTDIR="${SRCDIR}/cache/bootc-output" )
+fi
