@@ -63,13 +63,14 @@ dracut --force --zstd --reproducible --no-hostonly "${KVER_DIR}/initramfs.img" "
 mkdir -p /usr/lib/sysimage
 if [ -d /var/lib/dpkg ]; then
     rm -rf /usr/lib/sysimage/dpkg
-    cp -a /var/lib/dpkg /usr/lib/sysimage/dpkg
+    mv /var/lib/dpkg /usr/lib/sysimage/dpkg
 fi
 
 rm -rf /boot /home /root /srv /media
 
 mkdir -p /var/lib
-ln -sT ../../usr/lib/sysimage/dpkg /var/lib/dpkg
+
+ln -sfn ../../usr/lib/sysimage/dpkg /var/lib/dpkg
 
 mkdir -p /sysroot /boot /usr/lib/ostree /var /var/tmp /home /root /srv /opt /mnt
 
