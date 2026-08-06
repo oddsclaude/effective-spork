@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
 # Stubs the kernel/grub postinst hooks so package installs that pull a
 # kernel don't try to build an initramfs or grub config -- the initramfs is
-# built explicitly with dracut in mkosi.finalize.chroot's build (via the
-# gnome/bootc profiles' postinst) instead. Translated verbatim from
-# Containerfile.ubuntu's stub step; this part is genuinely distro-specific
-# (Ubuntu's kernel packaging triggers these hooks on install, Arch's does
-# not), not a leftover.
+# built explicitly with dracut later in this same script instead. Translated
+# verbatim from Containerfile.ubuntu's stub step; this part is genuinely
+# distro-specific (Ubuntu's kernel packaging triggers these hooks on
+# install, Arch's does not), not a leftover.
 set -xeuo pipefail
+
+# Stage vmlinuz where bootc expects it. linux-generic/linux-firmware are now
+# installed via mkosi.profiles/base/mkosi.conf's [Content] Packages= (mkosi's
+# own package-install phase, which actually has working apt sources --
+# unlike this postinst.chroot script or mkosi.prepare.chroot, neither of
+# which do, see mkosi.profiles/base/mkosi.conf's comment for the full
+# explanation). Ubuntu's kernel packaging puts the actual kernel image under
+# /boot/vmlinuz-<kver>, not /usr/lib/modules/<kver>/ where bootc looks for
+# it -- this copy is pure file manipulation, no apt/network needed, which is
+# why it belongs in postinst.chroot rather than back in a prepare.chroot.
+KVER=$(find /usr/lib/modules -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1 | xargs basename)
+cp "/boot/vmlinuz-${KVER}" "/usr/lib/modules/${KVER}/vmlinuz"
 
 printf '#!/bin/sh\nexit 0\n' | tee \
     /usr/sbin/update-initramfs /usr/sbin/mkinitramfs \

@@ -3,9 +3,17 @@
 # tuna-os/tunaOS's build_scripts/bootc/install-bootc.sh does (bootc is not in
 # the Ubuntu archive -- 0 entries across all series, per tunaOS's own
 # comment). Runs in mkosi.prepare.chroot for network access (adding an apt
-# repo + apt-get update/install needs it); apt resolves bootc's
-# dracut/ostree/libostree-dev dependencies automatically, no separate
-# from-source build needed the way Arch required.
+# repo + apt-get update/install needs it).
+#
+# NOTE: this only works because it adds its OWN apt source
+# (bootc-deb.list) rather than depending on Ubuntu's own apt sources being
+# present -- they aren't, by the time any mkosi.prepare.chroot "final"
+# script runs (see mkosi.profiles/base/mkosi.conf's comment for the full
+# explanation, discovered via a real CI failure on the base profile's old
+# prepare.chroot). That means bootc's Depends (dracut, ostree,
+# libostree-dev) can only resolve from packages already installed via
+# [Content] Packages=, not from Ubuntu's archive at this point -- all three
+# are listed in mkosi.profiles/base/mkosi.conf for exactly this reason.
 set -xeuo pipefail
 
 curl -fsSL https://raw.githubusercontent.com/bootc-shindig/bootc-deb/refs/heads/main/bootc-deb.asc |
