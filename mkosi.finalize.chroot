@@ -68,10 +68,6 @@ fi
 
 rm -rf /boot /home /root /srv /media
 
-find /var -mindepth 1 -maxdepth 1 \
-    ! -name tmp \
-    -exec rm -rf {} +
-
 mkdir -p /var/lib
 ln -sT ../../usr/lib/sysimage/dpkg /var/lib/dpkg
 
