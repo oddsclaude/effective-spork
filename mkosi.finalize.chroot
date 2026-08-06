@@ -54,9 +54,8 @@ set -xeuo pipefail
 # (see the ordering explanation above) this is also the earliest point at
 # which every profile's dracut modules.d/ contributions are guaranteed to
 # already be on disk.
-KVER_DIR="$(find /usr/lib/modules -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)"
-KVER="$(basename "${KVER_DIR}")"
-dracut --force --zstd --reproducible --no-hostonly "${KVER_DIR}/initramfs.img" "${KVER}"
+KERNEL_PATH="$(find /usr/lib/modules -maxdepth 1 -type d | grep -v -E "*.img" | tail -n 1)"
+dracut --verbose --force "${KERNEL_PATH}/initramfs.img" --kver "$(basename "${KERNEL_PATH}")"
 
 # Preserve the dpkg database across the /var wipe below -- without this the
 # shipped image can't answer `dpkg-query -W` (tuna-os/tunaos-packages#135).
