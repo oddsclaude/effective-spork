@@ -2,10 +2,34 @@
 # Recreates the ostree/bootc directory layout for an apt/dpkg-based system,
 # translated from tuna-os/tunaOS's build_scripts/bootc/mount-system.sh (the
 # script that "bootcifies" their Ubuntu rootfs). This always runs, regardless
-# of which mkosi.profiles/* are selected.
+# of which mkosi.profiles/* are selected, and -- unlike per-profile
+# mkosi.postinst.chroot scripts, which mkosi runs in --profile= order --
+# mkosi.finalize.chroot is guaranteed to run only after every active
+# profile's postinst.chroot has already finished (mkosi's documented script
+# order is prepare, build, postinst, finalize). That guarantee is why the
+# dracut initramfs build lives here now instead of in
+# mkosi.profiles/base/mkosi.postinst.chroot where it used to be:
 #
-# This is a deliberately different mechanism from what the Arch/pacman
-# version of this file did, not a find-replace:
+# bootc's dracut module (crates/initramfs/dracut/module-setup.sh in
+# bootc-dev/bootc, installed to /usr/lib/dracut/modules.d/51bootc by `make
+# install-all`) only gets staged into the image by
+# mkosi.profiles/bootc/mkosi.postinst.chroot's `cp -a
+# "${SRCDIR}/cache/bootc-output"/. /` step. With the dracut build in base's
+# postinst.chroot, and the Justfile passing
+# `--profile="base,gnome,bootc,brew[,nvidia]"` (base before bootc), dracut
+# ran before bootc's module file existed on disk at all --
+# `dracut[E]: Module 'bootc' cannot be found`. Running it here instead
+# removes the dependency on profile ordering entirely.
+#
+# This also matches how both of the reference implementations this repo's
+# bootc setup is modeled on order things: bootcrew/mono's ubuntu/Containerfile
+# runs shared/initramfs.sh BEFORE shared/bootc-rootfs.sh (the /var-wipe
+# step below), and tuna-os/tunaOS's finalize.sh builds the initramfs before
+# calling mount-system.sh (their own /var-wipe) for the same reason -- dracut
+# needs to run while /var still exists in its normal, un-wiped state.
+#
+# The rest of this file is a deliberately different mechanism from what the
+# Arch/pacman version used to do, not a find-replace:
 #   * dpkg's database (/var/lib/dpkg) is relocated to /usr/lib/sysimage and
 #     symlinked back via a tmpfiles L+ rule (mkosi.extra/usr/lib/tmpfiles.d/
 #     dpkg-sysimage.conf), same idea as pacman's relocation but dpkg-shaped.
@@ -13,14 +37,26 @@
 #     mkosi.extra/usr/lib/systemd/system/*.mount) that map to /var/<dir> at
 #     boot, NOT plain symlinks like the Arch version used. This is what
 #     tunaOS's mount-system.sh actually does -- ostree/rpm-based bootc images
-#     tend to use symlinks, but tunaOS's Ubuntu path uses bind mounts, so
-#     that's what's mirrored here.
+#     tend to use symlinks (as does bootcrew/mono's bootc-rootfs.sh, for what
+#     it's worth), but tunaOS's Ubuntu path uses bind mounts, so that's what's
+#     mirrored here. Not switched to match bootcrew, since that's an
+#     unrelated, untested behavior change -- see the PR that ported
+#     bootcrew's from-source bootc build for the full reasoning.
 #   * composefs sysroot config (mkosi.extra/usr/lib/ostree/prepare-root.conf)
 #     and the base-directory tmpfiles rules (mkosi.extra/usr/lib/tmpfiles.d/
 #     bootc-base-directories.conf) are shipped as static files rather than
 #     written here, matching how tunaOS ships them (as an overlay directory)
 #     rather than generating them in a script.
 set -xeuo pipefail
+
+# Build the initramfs for whatever kernel is currently staged. Must run
+# before the /var wipe below: dracut needs /var/tmp as scratch space, and
+# (see the ordering explanation above) this is also the earliest point at
+# which every profile's dracut modules.d/ contributions are guaranteed to
+# already be on disk.
+KVER_DIR="$(find /usr/lib/modules -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)"
+KVER="$(basename "${KVER_DIR}")"
+dracut --force --zstd --reproducible --no-hostonly "${KVER_DIR}/initramfs.img" "${KVER}"
 
 # Preserve the dpkg database across the /var wipe below -- without this the
 # shipped image can't answer `dpkg-query -W` (tuna-os/tunaos-packages#135).
