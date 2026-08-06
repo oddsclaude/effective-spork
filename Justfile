@@ -98,8 +98,19 @@ build:
 [group('Build')]
 load $target_image=image_name $tag=default_tag:
     #!/usr/bin/env bash
-    set -x
-    podman load -i "$(find mkosi.output/* -maxdepth 0 -type d -printf "%T@ ,%p\n" -iname "_*" -print0 | sort -n | head -n1 | cut -d, -f2)" -q | cut -d: -f3 | xargs -I{} podman tag {} "${target_image}:${tag}"
+    set -euxo pipefail
+
+    # mkosi names the OCI layout dir like `<image-id>_<version>_<arch>` (no
+    # leading underscore), so locate it by its oci-layout marker instead of
+    # guessing a name pattern.
+    OCI_DIR="$(find mkosi.output -maxdepth 1 -type d -exec test -f '{}/oci-layout' \; -printf '%T@ %p\n' | sort -n | tail -n1 | cut -d' ' -f2-)"
+
+    if [[ -z "${OCI_DIR}" ]]; then
+        echo "Error: no OCI image found in mkosi.output/" >&2
+        exit 1
+    fi
+
+    podman load -i "${OCI_DIR}" -q | cut -d: -f3 | xargs -r -I{} podman tag {} "${target_image}:${tag}"
 
 # Lint the loaded image with bootc. Run after `just load`.
 [group('Build')]
@@ -109,7 +120,7 @@ lint-image $target_image=image_name $tag=default_tag:
 # Split the image for smaller updates. Unchanged from before -- chunkah
 # works on any OCI image regardless of how it was built, so this doesn't
 # need to change for the Ubuntu migration either.
-rechunk $target_image=image_name $tag=default_tag: 
+rechunk $target_image=image_name $tag=default_tag:
     #!/usr/bin/env bash
 
     set -xeuo pipefail
