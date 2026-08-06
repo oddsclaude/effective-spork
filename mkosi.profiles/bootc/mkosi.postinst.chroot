@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Sanity-checks the installed bootc binary and runs the lint tunaOS's
-# finalize.sh runs post-bootcify. The actual initramfs build and
-# dpkg/ostree directory layout work happens in mkosi.profiles/base's
-# postinst and the top-level mkosi.finalize.chroot respectively, since
-# those need to happen exactly once regardless of which profiles are
-# combined, not duplicated here.
+# Installs the bootc binaries built by mkosi.prepare.chroot into the image,
+# then sanity-checks and lints. Runs with no network (postinst.chroot),
+# which is fine -- the actual build already happened in mkosi.prepare.chroot
+# with everything staged under $SRCDIR/cache; this just copies it in.
 set -xeuo pipefail
+
+cp -a "${SRCDIR}/cache/bootc-output"/. /
 
 stat /usr/bin/bootc
 
